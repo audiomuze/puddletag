@@ -170,11 +170,17 @@ def url_encode_non_ascii(b):
     return re.sub('[\x80-\xFF]', lambda c: '%%%02x' % ord(c.group(0)), b)
 
 
-def urlopen(url, mask=True, code=False):
+def urlopen(url, mask=True, code=False, headers=None):
     try:
         request = urllib.request.Request(url)
-        if useragent:
+        custom_headers = headers or {}
+        normalized_headers = {key.lower(): value for key, value in custom_headers.items()}
+        if useragent and 'user-agent' not in normalized_headers:
             request.add_header('User-Agent', useragent)
+        for header, value in custom_headers.items():
+            if value is None:
+                continue
+            request.add_header(header, value)
         page = urllib.request.build_opener().open(request)
         if page.code == 403:
             raise RetrievalError(
