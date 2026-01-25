@@ -646,7 +646,9 @@ def fetch_tracklisting_soup(album_url):
         except RetrievalError as exc:
             write_log(f"Track listing fallback fetch failed: {exc}")
             return None
-    return parse_html.SoupWrapper(parse_html.parse(track_page))
+    track_text = decode_page(track_page)
+    # Tracklisting AJAX responses omit charset info, so decode explicitly.
+    return parse_html.SoupWrapper(parse_html.parse(track_text))
 
 
 def parse_modern_albumpage(page, album_soup, artist=None, album=None, album_url=None):
