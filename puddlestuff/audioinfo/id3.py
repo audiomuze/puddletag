@@ -263,6 +263,9 @@ def usertext_handler(frames):
     return d
 
 
+write_frames['track_review'] = partial(create_usertext, 'track_review')
+
+
 url_frames = {
     id3.WCOP: "wwwcopyright",
     id3.WOAF: "wwwfileinfo",

@@ -20,7 +20,8 @@ from puddlestuff.tagsources import (write_log, set_status, RetrievalError,
 try:
     _URL_OPEN_SUPPORTS_HEADERS = 'headers' in inspect.signature(urlopen).parameters
 except (AttributeError, TypeError, ValueError):
-    _URL_OPEN_SUPPORTS_HEADERS = False
+    # Default to assuming header support; we'll detect lack of support at runtime.
+    _URL_OPEN_SUPPORTS_HEADERS = True
 
 _HEADERS_FALLBACK_LOGGED = False
 
@@ -30,6 +31,7 @@ class OldURLError(RetrievalError):
 
 
 ALBUM_ID = 'amg_album_id'
+RELEASE_ID = 'amg_release_id'
 
 release_order = ('year', 'type', 'label', 'catalog')
 search_adress = 'https://www.allmusic.com/search/albums/%s'
@@ -396,10 +398,61 @@ def parse_similar(swipe):
 def parse_albumpage(page, artist=None, album=None, album_url=None):
     album_soup = parse_html.SoupWrapper(parse_html.parse(page))
 
+    if album_soup.find('div', {'id': 'releaseHeader'}):
+        return parse_release_albumpage(page, album_soup, album_url=album_url)
+
     if album_soup.find('div', {'id': 'albumHeadline'}):
         return parse_modern_albumpage(page, album_soup, artist, album, album_url)
 
     info = {}
+
+    def extract_artist_from_jsonld():
+        release_headline = album_soup.find('div', {'id': 'releaseHeadline'})
+        if release_headline is not None:
+            headline_artist = release_headline.find('h2')
+            if headline_artist is not None:
+                anchor = headline_artist.find('a')
+                if anchor is not None and anchor.string:
+                    text = convert(anchor.string)
+                    if text:
+                        return text
+                if headline_artist.string:
+                    text = convert(headline_artist.string)
+                    if text:
+                        return text
+        scripts = album_soup.find_all('script')
+        for script in scripts:
+            try:
+                tag = script.element.tag
+            except AttributeError:
+                continue
+            if tag != 'script':
+                continue
+            script_type = script.element.attrib.get('type', '')
+            if script_type.lower() != 'application/ld+json':
+                continue
+            data = script.string or ''
+            if not data.strip():
+                continue
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            release_of = payload.get('releaseOf')
+            if not isinstance(release_of, dict):
+                continue
+            by_artist = release_of.get('byArtist')
+            if isinstance(by_artist, dict):
+                candidates = [by_artist]
+            elif isinstance(by_artist, list):
+                candidates = [entry for entry in by_artist if isinstance(entry, dict)]
+            else:
+                continue
+            for candidate in candidates:
+                name = candidate.get('name')
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
+        return None
 
     album = album_soup.find('h1', {'class': 'album-title'})
     artist = album_soup.find('h2', {'class': 'album-artist'})
@@ -415,18 +468,42 @@ def parse_albumpage(page, artist=None, album=None, album_url=None):
         artist = album_soup.find('h3', 'release-artist')
 
     if album is None:
-        info.update({'artist': convert(artist.string), 'album': ''})
+        artist_text = convert(artist.string) if artist is not None else None
+        if artist_text is None:
+            artist_text = extract_artist_from_jsonld()
+        if artist_text:
+            info.update({'artist': artist_text, 'album': ''})
+        else:
+            info.update({'album': ''})
     else:
-        info.update({'artist': convert(artist.string), 'album': convert(album.string)})
-    info['albumartist'] = info['artist']
+        artist_text = convert(artist.string) if artist is not None else None
+        if artist_text is None:
+            artist_text = extract_artist_from_jsonld()
+        if artist_text:
+            info.update({'artist': artist_text, 'album': convert(album.string)})
+        else:
+            info.update({'album': convert(album.string)})
+    if 'artist' in info:
+        info['albumartist'] = info['artist']
 
     sidebar = album_soup.find('div', {'class': 'sidebar'})
-    info.update(parse_sidebar(sidebar))
+    if sidebar is not None:
+        info.update(parse_sidebar(sidebar))
+    else:
+        write_log('AllMusic: sidebar not found for legacy layout; continuing without sidebar metadata.')
     info.update(convert_year(info))
 
-    content = album_soup.find('section', {'class': 'review read-more'})
+    content = _locate_review_section(album_soup)
+    if content is None:
+        ajax_soup = fetch_review_soup(album_url)
+        content = _locate_review_section(ajax_soup)
     if content:
         info.update(parse_review(content))
+
+    canonical = extract_canonical_url(album_soup)
+    fallback_url = canonical or album_url
+    _ensure_moods_themes(info, album_soup, fallback_url)
+    _ensure_credits(info, album_soup, fallback_url)
 
     # swipe = main.find('div', {'id':"similar-albums", 'class':"grid-gallery"})
 
@@ -434,7 +511,6 @@ def parse_albumpage(page, artist=None, album=None, album_url=None):
 
     info = dict((spanmap.get(k, k), v) for k, v in info.items() if not isempty(v))
 
-    canonical = extract_canonical_url(album_soup)
     if canonical:
         info['#canonical-url'] = canonical
 
@@ -610,14 +686,15 @@ def _manual_urlopen_with_headers(url, headers=None):
         raise RetrievalError(str(exc))
 
 
-def fetch_tracklisting_soup(album_url):
+def _fetch_tab_soup(album_url, tab_suffix, log_label):
     global _URL_OPEN_SUPPORTS_HEADERS, _HEADERS_FALLBACK_LOGGED
     normalized = _normalize_album_url(album_url)
     if not normalized:
         return None
-    ajax_url = iri_to_uri(f"{normalized}/trackListingAjax")
+    ajax_url = iri_to_uri(f"{normalized}/{tab_suffix}")
     headers = {'Referer': iri_to_uri(normalized)}
-    write_log(f"Fetching track listing via AJAX - {ajax_url}")
+    write_log(f"Fetching {log_label} via AJAX - {ajax_url}")
+    log_title = log_label.capitalize()
     if _URL_OPEN_SUPPORTS_HEADERS:
         try:
             track_page = urlopen(ajax_url, headers=headers)
@@ -632,10 +709,10 @@ def fetch_tracklisting_soup(album_url):
             try:
                 track_page = _manual_urlopen_with_headers(ajax_url, headers=headers)
             except RetrievalError as exc:
-                write_log(f"Track listing fallback fetch failed: {exc}")
+                write_log(f"{log_title} fallback fetch failed: {exc}")
                 return None
         except RetrievalError as exc:
-            write_log(f"Track listing AJAX fetch failed: {exc}")
+            write_log(f"{log_title} AJAX fetch failed: {exc}")
             return None
     else:
         if not _HEADERS_FALLBACK_LOGGED:
@@ -644,11 +721,358 @@ def fetch_tracklisting_soup(album_url):
         try:
             track_page = _manual_urlopen_with_headers(ajax_url, headers=headers)
         except RetrievalError as exc:
-            write_log(f"Track listing fallback fetch failed: {exc}")
+            write_log(f"{log_title} fallback fetch failed: {exc}")
             return None
     track_text = decode_page(track_page)
-    # Tracklisting AJAX responses omit charset info, so decode explicitly.
-    return parse_html.SoupWrapper(parse_html.parse(track_text))
+    if isinstance(track_text, bytes):
+        track_text = track_text.decode('utf-8', 'ignore')
+    track_text = (track_text or '').strip()
+    if not track_text:
+        write_log(f"{log_title} AJAX response was empty; skipping {log_label}.")
+        return None
+    # AJAX responses omit charset info, so decode explicitly.
+    try:
+        parsed = parse_html.parse(track_text)
+    except Exception as exc:
+        write_log(f"{log_title} parse failed: {exc}")
+        return None
+    return parse_html.SoupWrapper(parsed)
+
+
+def fetch_tracklisting_soup(album_url):
+    return _fetch_tab_soup(album_url, 'trackListingAjax', 'track listing')
+
+
+def fetch_review_soup(album_url):
+    return _fetch_tab_soup(album_url, 'reviewAjax', 'review')
+
+
+def _locate_review_section(soup):
+    if soup is None:
+        return None
+    review_section = soup.find('div', {'id': 'review'})
+    if review_section is not None:
+        return review_section
+    return soup.find('section', {'class': 'review read-more'})
+
+
+def _fetch_track_review_text(track_url):
+    normalized = _normalize_album_url(track_url)
+    if not normalized:
+        return None
+    write_log(f"Fetching track review - {normalized}")
+    review_section = None
+
+    def _download_track_page(url):
+        try:
+            with _AllMusicUserAgent():
+                page = urlopen(iri_to_uri(url))
+        except (urllib.error.URLError, RetrievalError) as exc:
+            write_log(f"Track review fetch failed: {exc}")
+            return None
+        review_text = decode_page(page)
+        if isinstance(review_text, bytes):
+            review_text = review_text.decode('utf-8', 'ignore')
+        review_text = (review_text or '').strip()
+        if not review_text:
+            write_log("Track review response was empty; skipping track review.")
+            return None
+        try:
+            return parse_html.SoupWrapper(parse_html.parse(review_text))
+        except Exception as exc:
+            write_log(f"Track review parse failed: {exc}")
+            return None
+
+    review_soup = _download_track_page(normalized)
+    if review_soup is not None:
+        review_section = _locate_review_section(review_soup)
+
+    if review_section is None:
+        ajax_soup = _fetch_tab_soup(normalized, 'reviewAjax', 'track review')
+        if ajax_soup is not None:
+            review_section = _locate_review_section(ajax_soup)
+
+    if review_section is None:
+        return None
+
+    parsed = parse_review(review_section)
+    review_text = parsed.get('review')
+    if review_text:
+        return review_text.strip()
+    return None
+
+
+def _populate_track_reviews(tracks):
+    cache = {}
+    for track in tracks:
+        if not track.get('#has_review'):
+            track.pop('#has_review', None)
+            track.pop('#trackreviewurl', None)
+            continue
+        review_url = track.get('#trackreviewurl') or track.get('#trackurl')
+        normalized = _normalize_album_url(review_url)
+        if not normalized:
+            continue
+        if normalized not in cache:
+            cache[normalized] = _fetch_track_review_text(normalized)
+        review_text = cache.get(normalized)
+        if review_text:
+            track['track_review'] = review_text
+            title = track.get('title') or track.get('track') or normalized
+            write_log(
+                "Stored track review for %s (%d chars)." %
+                (title, len(review_text)))
+        else:
+            title = track.get('title') or track.get('track') or normalized
+            write_log("No review text returned for %s." % title)
+        track.pop('#has_review', None)
+        track.pop('#trackreviewurl', None)
+
+
+def fetch_moods_themes_soup(album_url):
+    return _fetch_tab_soup(album_url, 'moodsThemesAjax', 'moods/themes')
+
+
+def _collect_mood_theme_values(container, node_id):
+    if container is None:
+        return []
+    target = container.find('div', {'id': node_id})
+    if target is None:
+        target = container.find('div', {'class': node_id})
+    if target is None:
+        return []
+    anchors = target.find_all('a')
+    values = [element_text(anchor) for anchor in anchors]
+    return [value for value in values if value]
+
+
+def _extract_moods_themes(soup):
+    if soup is None:
+        return {}
+    container = soup.find('div', {'id': 'moodsThemes'})
+    if container is None:
+        tab_content = soup.find('div', {'class': 'tabContent moodsThemes'})
+        if tab_content is not None:
+            nested = tab_content.find('div', {'id': 'moodsThemes'})
+            container = nested or tab_content
+    if container is None:
+        return {}
+    info = {}
+    moods = _collect_mood_theme_values(container, 'moodsGrid')
+    if moods:
+        info['mood'] = moods
+    themes = _collect_mood_theme_values(container, 'themesGrid')
+    if themes:
+        info['theme'] = themes
+    return info
+
+
+def _ensure_moods_themes(info, album_soup, album_url=None):
+    additions = _extract_moods_themes(album_soup)
+    if (not additions) and album_url:
+        ajax_soup = fetch_moods_themes_soup(album_url)
+        additions = _extract_moods_themes(ajax_soup)
+    if not additions:
+        return
+    for field, values in additions.items():
+        if not values:
+            continue
+        existing = info.get(field)
+        if existing:
+            continue
+        info[field] = values
+
+
+def fetch_credits_soup(album_url):
+    return _fetch_tab_soup(album_url, 'creditsAjax', 'credits')
+
+
+def _extract_credit_table(soup):
+    if soup is None:
+        return None
+    container = soup.find('div', {'id': 'credits'})
+    if container is None:
+        tab_content = soup.find('div', {'class': 'tabContent credits'})
+        if tab_content is not None:
+            nested = tab_content.find('div', {'id': 'credits'})
+            container = nested or tab_content
+    if container is None:
+        return None
+    table = container.find('table')
+    if table is None:
+        return None
+    return table
+
+
+def _split_roles(roles_text):
+    if not roles_text:
+        return []
+    parts = [part.strip() for part in roles_text.split(',')]
+    return [part for part in parts if part]
+
+
+def _normalize_role_tag(role):
+    if not role:
+        return None
+    cleaned = role.strip()
+    if not cleaned:
+        return None
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    cleaned = cleaned.lower()
+    cleaned = re.sub(r'[^0-9a-z]+', '_', cleaned)
+    cleaned = cleaned.strip('_')
+    return cleaned or None
+
+
+def _extract_credits(soup):
+    table = _extract_credit_table(soup)
+    if table is None:
+        return []
+    entries = []
+    rows = table.find_all('tr')
+    for row in rows:
+        cell = row.find('td', {'class': 'singleCredit'})
+        if cell is None:
+            continue
+        name_block = cell.find('span', {'class': 'artist'})
+        name = element_text(name_block)
+        artist_url = None
+        if name_block is not None:
+            anchor = name_block.find('a')
+            if anchor is not None:
+                href = anchor.element.attrib.get('href')
+                if href:
+                    artist_url = iri_to_uri(href)
+        role_block = cell.find('span', {'class': 'artistCredits'})
+        roles_text = element_text(role_block)
+        if not name and not roles_text:
+            continue
+        entry_text = name if not roles_text else f"{name} - {roles_text}"
+        entries.append({
+            'entry': entry_text,
+            'name': name or entry_text,
+            'roles': _split_roles(roles_text),
+            'artist_url': artist_url,
+        })
+    return entries
+
+
+def _ensure_credits(info, album_soup, album_url=None):
+    credits = _extract_credits(album_soup)
+    if not credits and album_url:
+        ajax_soup = fetch_credits_soup(album_url)
+        credits = _extract_credits(ajax_soup)
+    if not credits:
+        return
+
+    artist_urls = []
+    for entry in credits:
+        link = entry.get('artist_url')
+        if link and link not in artist_urls:
+            artist_urls.append(link)
+    if artist_urls:
+        existing_urls = info.get('amg_artists')
+        if not existing_urls:
+            info['amg_artists'] = artist_urls
+        else:
+            if not isinstance(existing_urls, list):
+                existing_urls = [existing_urls]
+                info['amg_artists'] = existing_urls
+            for link in artist_urls:
+                if link not in existing_urls:
+                    existing_urls.append(link)
+
+    for entry in credits:
+        roles = entry['roles'] or []
+        primary_value = entry.get('name') or entry.get('entry')
+        if not primary_value:
+            continue
+        for role in roles:
+            tag = _normalize_role_tag(role)
+            if tag is None:
+                continue
+            values = info.get(tag)
+            if not values:
+                info[tag] = [primary_value]
+                continue
+            if isinstance(values, list):
+                if primary_value not in values:
+                    values.append(primary_value)
+            else:
+                if values != primary_value:
+                    info[tag] = [values, primary_value]
+
+
+def parse_release_albumpage(page, album_soup, album_url=None):
+    info = {}
+
+    release_headline = album_soup.find('div', {'id': 'releaseHeadline'})
+    if release_headline is not None:
+        title = release_headline.find('h1', {'id': 'releaseTitle'})
+        if title is not None:
+            info['album'] = convert(title.string)
+            release_id = title.element.attrib.get('data-releaseid')
+            if release_id:
+                info[RELEASE_ID] = release_id.strip().lower()
+        artist_block = release_headline.find('h2')
+        artist_text = extract_linked_text(artist_block)
+        if artist_text:
+            info['artist'] = artist_text
+            info['albumartist'] = artist_text
+        detail_block = release_headline.find('h3')
+        detail_text = element_text(detail_block)
+        if detail_text:
+            info['release'] = detail_text
+
+    main_album_section = album_soup.find('div', {'id': 'mainAlbum'})
+    if main_album_section is not None:
+        anchor = main_album_section.find('a')
+        if anchor is not None and anchor.string:
+            info.setdefault('main_album', convert(anchor.string))
+            href = anchor.element.attrib.get('href')
+            if href:
+                info['#main-album-url'] = iri_to_uri(href)
+                album_id = extract_album_id_from_url(href)
+                if album_id:
+                    info[ALBUM_ID] = album_id
+
+    info.update(parse_basic_info_meta(album_soup))
+    info.update(convert_year(info))
+
+    cover_info = parse_modern_cover(album_soup, page)
+    if cover_info:
+        info.update(cover_info)
+
+    canonical = extract_canonical_url(album_soup)
+    if canonical:
+        info['#canonical-url'] = canonical
+
+    _ensure_moods_themes(info, album_soup, info.get('#canonical-url') or album_url)
+    _ensure_credits(info, album_soup, info.get('#canonical-url') or album_url)
+
+    review_section = _locate_review_section(album_soup)
+    if review_section is None:
+        ajax_source = info.get('#canonical-url') or album_url
+        ajax_soup = fetch_review_soup(ajax_source)
+        review_section = _locate_review_section(ajax_soup)
+    if review_section is not None:
+        info.update(parse_review(review_section))
+
+    info = dict((spanmap.get(k, k), v) for k, v in info.items() if not isempty(v))
+
+    if 'artist' in info and 'albumartist' not in info:
+        info['albumartist'] = info['artist']
+
+    tracks = parse_tracks(album_soup, info)
+    if not tracks:
+        ajax_source = info.get('#canonical-url') or album_url
+        ajax_soup = fetch_tracklisting_soup(ajax_source)
+        if ajax_soup is not None:
+            ajax_tracks = parse_tracks(ajax_soup, info)
+            if ajax_tracks:
+                tracks = ajax_tracks
+
+    return [info, tracks]
 
 
 def parse_modern_albumpage(page, album_soup, artist=None, album=None, album_url=None):
@@ -684,9 +1108,14 @@ def parse_modern_albumpage(page, album_soup, artist=None, album=None, album_url=
     if canonical:
         info['#canonical-url'] = canonical
 
-    review_section = album_soup.find('div', {'id': 'review'})
+    _ensure_moods_themes(info, album_soup, info.get('#canonical-url') or album_url)
+    _ensure_credits(info, album_soup, info.get('#canonical-url') or album_url)
+
+    review_section = _locate_review_section(album_soup)
     if review_section is None:
-        review_section = album_soup.find('section', {'class': 'review read-more'})
+        ajax_source = info.get('#canonical-url') or album_url
+        ajax_soup = fetch_review_soup(ajax_source)
+        review_section = _locate_review_section(ajax_soup)
     if review_section is not None:
         info.update(parse_review(review_section))
 
@@ -861,6 +1290,17 @@ def parse_modern_track(track_div):
                 track['#trackurl'] = iri_to_uri(href)
         else:
             track['title'] = element_text(title_block)
+        review_anchor = title_block.find('a', {'class': 'hasReviewLink'})
+        if review_anchor is not None:
+            track['#has_review'] = True
+            review_href = review_anchor.element.attrib.get('href')
+            if review_href:
+                normalized_href = iri_to_uri(review_href)
+                if normalized_href.startswith('/'):
+                    normalized_href = 'https://www.allmusic.com' + normalized_href
+                track['#trackreviewurl'] = normalized_href
+            elif '#trackurl' in track:
+                track['#trackreviewurl'] = track['#trackurl']
 
     composer_block = track_div.find('div', {'class': 'composer'})
     if composer_block is not None:
@@ -987,6 +1427,7 @@ def parse_tracks(content, album_info):
             replace_feat(album_info, track)
 
         tracks.extend(disc_tracks)
+    _populate_track_reviews(tracks)
     return tracks
 
 

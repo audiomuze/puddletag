@@ -38,7 +38,7 @@ FIELDS = [
     'originalyear', 'performersortorder', 'performer', 'popularimeter',
     'producednotice', 'radioowner', 'radiostationname', 'recordingdates',
     'releasetime', 'setsubtitle', 'taggingtime', 'time', 'title',
-    'titlesortorder', 'track', 'ufid', 'version', 'wwwartist',
+    'titlesortorder', 'track', 'track_review', 'ufid', 'version', 'wwwartist',
     'wwwcommercialinfo', 'wwwcopyright', 'wwwfileinfo', 'wwwpayment',
     'wwwpublisher', 'wwwradio', 'wwwsource', 'year']
 
@@ -83,4 +83,4 @@ TEXT_FIELDS = ['album', 'albumartist', 'albumartistsortorder', 'albumsortorder',
                'lyricist', 'mediatype', 'mood', 'organization', 'originalalbum',
                'originalartist', 'originalyear', 'peformersortorder', 'producednotice',
                'radioowner', 'radiostationname', 'recordingdates', 'setsubtitle',
-               'time', 'title', 'titlesortorder', 'track', 'version', 'year']
+               'time', 'title', 'titlesortorder', 'track', 'track_review', 'version', 'year']
