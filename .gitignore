@@ -17,3 +17,5 @@ build/
 dist/
 *.egg-info/
 MANIFEST
+
+amg_rendered_html/

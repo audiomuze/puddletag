@@ -247,7 +247,7 @@ def extract_linked_text(block):
         parts = [element_text(anchor) for anchor in anchors]
         parts = [part for part in parts if part]
         if parts:
-            return '\\\\\\'.join(parts)
+            return '\\\\'.join(parts)
     return element_text(block)
 
 
@@ -514,7 +514,18 @@ def parse_albumpage(page, artist=None, album=None, album_url=None):
     if canonical:
         info['#canonical-url'] = canonical
 
-    return [info, parse_tracks(album_soup, info)]
+    tracks = parse_tracks(album_soup, info)
+    if not tracks and fallback_url:
+        ajax_soup = fetch_tracklisting_soup(fallback_url)
+        if ajax_soup is not None:
+            ajax_tracks = parse_tracks(ajax_soup, info)
+            if ajax_tracks:
+                tracks = ajax_tracks
+    if not tracks:
+        write_log('AllMusic: No track listing found for this album; returning album-only metadata.')
+        tracks = None
+
+    return [info, tracks]
 
 
 def parse_sidebar_element(element):
@@ -867,11 +878,16 @@ def _extract_moods_themes(soup):
     return info
 
 
-def _ensure_moods_themes(info, album_soup, album_url=None):
+def _ensure_moods_themes(info, album_soup, *album_urls):
     additions = _extract_moods_themes(album_soup)
-    if (not additions) and album_url:
-        ajax_soup = fetch_moods_themes_soup(album_url)
-        additions = _extract_moods_themes(ajax_soup)
+    if not additions:
+        for candidate_url in album_urls:
+            if not candidate_url:
+                continue
+            ajax_soup = fetch_moods_themes_soup(candidate_url)
+            additions = _extract_moods_themes(ajax_soup)
+            if additions:
+                break
     if not additions:
         return
     for field, values in additions.items():
@@ -957,11 +973,16 @@ def _extract_credits(soup):
     return entries
 
 
-def _ensure_credits(info, album_soup, album_url=None):
+def _ensure_credits(info, album_soup, *album_urls):
     credits = _extract_credits(album_soup)
-    if not credits and album_url:
-        ajax_soup = fetch_credits_soup(album_url)
-        credits = _extract_credits(ajax_soup)
+    if not credits:
+        for candidate_url in album_urls:
+            if not candidate_url:
+                continue
+            ajax_soup = fetch_credits_soup(candidate_url)
+            credits = _extract_credits(ajax_soup)
+            if credits:
+                break
     if not credits:
         return
 
@@ -1047,14 +1068,21 @@ def parse_release_albumpage(page, album_soup, album_url=None):
     if canonical:
         info['#canonical-url'] = canonical
 
-    _ensure_moods_themes(info, album_soup, info.get('#canonical-url') or album_url)
-    _ensure_credits(info, album_soup, info.get('#canonical-url') or album_url)
+    fallback_urls = [info.get('#canonical-url') or album_url,
+                     info.get('#main-album-url')]
+
+    _ensure_moods_themes(info, album_soup, *fallback_urls)
+    _ensure_credits(info, album_soup, *fallback_urls)
 
     review_section = _locate_review_section(album_soup)
     if review_section is None:
-        ajax_source = info.get('#canonical-url') or album_url
-        ajax_soup = fetch_review_soup(ajax_source)
-        review_section = _locate_review_section(ajax_soup)
+        for ajax_source in fallback_urls:
+            if not ajax_source:
+                continue
+            ajax_soup = fetch_review_soup(ajax_source)
+            review_section = _locate_review_section(ajax_soup)
+            if review_section is not None:
+                break
     if review_section is not None:
         info.update(parse_review(review_section))
 
@@ -1071,6 +1099,9 @@ def parse_release_albumpage(page, album_soup, album_url=None):
             ajax_tracks = parse_tracks(ajax_soup, info)
             if ajax_tracks:
                 tracks = ajax_tracks
+    if not tracks:
+        write_log('AllMusic: No track listing found for this release; returning album-only metadata.')
+        tracks = None
 
     return [info, tracks]
 
@@ -1132,6 +1163,9 @@ def parse_modern_albumpage(page, album_soup, artist=None, album=None, album_url=
             ajax_tracks = parse_tracks(ajax_soup, info)
             if ajax_tracks:
                 tracks = ajax_tracks
+    if not tracks:
+        write_log('AllMusic: No track listing found for this album; returning album-only metadata.')
+        tracks = None
 
     return [info, tracks]
 
@@ -1343,6 +1377,100 @@ def parse_modern_track(track_div):
     return dict((spanmap.get(k, k), v) for k, v in track.items() if spanmap.get(k, k) and not isempty(v))
 
 
+def _locate_performance_title(row):
+    parent = row.element.getparent()
+    while parent is not None:
+        class_attr = parent.attrib.get('class', '') or ''
+        classes = class_attr.split()
+        if 'performanceParts' in classes:
+            wrapper = parse_html.SoupWrapper(parent)
+            title_row = wrapper.find('div', {'class': 'performanceTitleRow'})
+            if title_row is not None:
+                text = element_text(title_row)
+                if text:
+                    return text
+            break
+        parent = parent.getparent()
+    return None
+
+
+def parse_classical_disc(disc):
+    rows = disc.find_all('div', {'class': re.compile(r'(?:^|\s)resultRow(?:\s|$)')})
+    if not rows:
+        return []
+    tracks = []
+    for row in rows:
+        track = {}
+
+        number_block = row.find('div', {'class': 'trackNum'})
+        if number_block is not None:
+            track_number = element_text(number_block)
+            if track_number:
+                track['track'] = track_number
+
+        title_block = row.find('div', {'class': 'title'})
+        if title_block is not None:
+            link = title_block.find('a')
+            if link is not None and link.string:
+                track['title'] = convert(link.string)
+                href = link.element.attrib.get('href')
+                if href:
+                    track['#trackurl'] = iri_to_uri(href)
+            else:
+                title_text = element_text(title_block)
+                if title_text:
+                    track['title'] = title_text
+
+        performance_title = _locate_performance_title(row)
+        if performance_title and track.get('title'):
+            track['title'] = f"{performance_title}: {track['title']}"
+
+        composer_block = row.find('div', {'class': 'composer'})
+        if composer_block is not None:
+            composer_text = extract_linked_text(composer_block)
+            if composer_text:
+                track['composer'] = composer_text
+
+        performer_block = row.find('div', {'class': 'performer'})
+        if performer_block is not None:
+            performer_text = extract_linked_text(performer_block)
+            if performer_text:
+                track['performer'] = performer_text
+
+        duration_block = row.find('div', {'class': 'duration'})
+        if duration_block is not None:
+            duration = element_text(duration_block)
+            if duration:
+                track['__length'] = duration
+
+        favorite = row.find('button', {'class': re.compile(r'(?:^|\s)songFavoriteIcon(?:\s|$)')})
+        if favorite is not None:
+            track_id = favorite.element.attrib.get('data-id')
+            if track_id:
+                track['amg_track_id'] = track_id.strip()
+            if 'performer' not in track:
+                performer_raw = favorite.element.attrib.get('data-artist')
+                performer_text = decode_data_attribute(performer_raw)
+                if performer_text:
+                    track['performer'] = performer_text
+            if 'title' not in track:
+                title_raw = favorite.element.attrib.get('data-title')
+                title_text = decode_data_attribute(title_raw)
+                if title_text:
+                    track['title'] = title_text
+
+        if 'performer' in track:
+            track['artist'] = track['performer']
+            del track['performer']
+
+        finalized = dict((spanmap.get(k, k), v) for k, v in track.items()
+                          if spanmap.get(k, k) and not isempty(v))
+        if finalized:
+            tracks.append(finalized)
+
+    return tracks
+
+
 def parse_track(tr, fields, performance_title=None):
     track = {}
     ignore = set(['pick-prefix', 'sample', 'stream', 'pick-suffix'])
@@ -1421,6 +1549,8 @@ def parse_tracks(content, album_info):
             disc_tracks = parse_track_table(table)
         else:
             disc_tracks = parse_modern_disc(disc)
+            if not disc_tracks:
+                disc_tracks = parse_classical_disc(disc)
         for track in disc_tracks:
             if disc_info:
                 track.update(disc_info)
