@@ -38,6 +38,8 @@ def applyaction(files=None, funcs=None):
         return
     state = {'__total_files': str(len(files))}
     state['__files'] = files
+    # Add all selected file tags to state for group-aware scripting
+    state['__selectedfiles'] = files
 
     def func():
         for i, f in enumerate(files):
@@ -54,6 +56,8 @@ def applyquickaction(files, funcs):
 
     selected = status['selectedtags']
     state = {'__total_files': str(len(selected))}
+    state['__files'] = files
+    state['__selectedfiles'] = files
     t = (qa(funcs, f, state, list(s.keys())) for f, s in zip(files, selected))
     emit('writeselected', t)
 

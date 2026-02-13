@@ -46,8 +46,10 @@ from unidecode import unidecode
 import pyparsing
 
 from . import audioinfo
+from . import context
 from .audioinfo import encode_fn
 from .puddleobjects import (safe_name, fnmatch, natural_sort_key)
+from .util import to_string
 
 PATH = audioinfo.PATH
 DIRPATH = audioinfo.DIRPATH
@@ -73,6 +75,43 @@ def _pad(text, numlen):
     if len(text) < numlen:
         text = _padding * ((numlen - len(text)) // len(_padding)) + text
     return text
+
+
+def identical(p_tagname=None, state=None):
+    '''Identical, Returns True if all selected files have the same value for the given tagname.
+&Tag name or %field%, text'''
+    selected = None
+    if not p_tagname:
+        raise FuncError('Tag name required for $identical.')
+    if state is not None:
+        selected = state.get('__selectedfiles')
+    if not selected:
+        selected = context.get_selected_files()
+    if not selected:
+        return false
+    tagname = to_string(p_tagname)
+    if tagname.startswith('%') and tagname.endswith('%') and len(tagname) > 2:
+        tagname = tagname[1:-1]
+    values = []
+    missing_value = False
+    for tags in selected:
+        try:
+            value = tags.get(tagname, None)
+        except AttributeError:
+            value = getattr(tags, tagname, None)
+        if value is None:
+            missing_value = True
+            continue
+        values.append(value)
+    if not values:
+        return false
+    if missing_value:
+        return false
+    first = values[0]
+    for v in values[1:]:
+        if v != first:
+            return false
+    return true
 
 
 def autonumbering(r_tags, minimum=1, restart=False, padding=1, state=None):
@@ -1050,6 +1089,7 @@ def validate(text, to=None, chars=None):
 
 
 functions = {
+        "identical": identical,
     "add": add,
     "and": and_,
     'artwork': load_images,

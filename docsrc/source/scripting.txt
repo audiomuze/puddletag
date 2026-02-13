@@ -71,6 +71,15 @@ The scripting functions that puddletag supports are listed here. Use them where 
 
    If string a is longer than string b, then x is returned, otherwise y.
 
+.. describe:: $identical(tagname)
+
+   Returns ``1`` when every currently selected file shares the same value for *tagname* and ``0`` otherwise. The argument can be a bare tag name such as ``albumartist`` or a field reference like ``%albumartist%``. puddletag uses the active selection from the tag grid, so the function is aware of multi-directory selections and treats missing values as mismatches.
+
+   Manual verification (Album Artist example):
+
+   #. Select all tracks from a single album where ``Album Artist`` is populated the same on every row, run :menuselection:`Actions --> Format value` (or any pattern entry point) with a temporary field set to ``$identical(%albumartist%)``, and confirm the preview shows ``1``.
+   #. Extend the selection with another directory that either leaves ``Album Artist`` blank or contains a different value, rerun the same action, and confirm the result flips to ``0`` to signal the mixed context.
+
 
 .. describe:: $isdigit(x)
 
