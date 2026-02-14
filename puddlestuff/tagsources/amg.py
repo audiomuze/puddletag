@@ -1781,7 +1781,8 @@ class AllMusic(object):
         if self._useid and hasattr(artists, 'values'):
             tracks = []
             [tracks.extend(z) for z in artists.values()]
-            for field in ('amg_rovi_id', 'amg_pop_id', 'amgsqlid', 'amg_album_id',):
+            # Prefer release ID over album ID when available
+            for field in ('amg_rovi_id', 'amg_pop_id', 'amgsqlid', 'amg_release_id', 'amg_album_id',):
                 album_id = find_id(tracks, field)
                 if album_id:
                     break
