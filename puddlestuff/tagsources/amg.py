@@ -866,14 +866,18 @@ def _fetch_main_album_info(main_album_url):
             album_soup = parse_html.SoupWrapper(parse_html.parse(album_page))
             info = parse_basic_info_meta(album_soup)
             info.update(parse_rating(album_soup))
+            # Also capture the album title from the main album page
+            title = album_soup.find('h1', {'id': 'albumTitle'})
+            if title is not None and title.string:
+                info['album'] = convert(title.string)
             return info
     except Exception as exc:
         write_log("Failed to fetch main album page: %s" % exc)
         return {}
 
 
-# Fields that are often missing on release pages but present on main album pages
-_MAIN_ALBUM_FIELDS = frozenset(['genre', 'styles', 'style'])
+# Fields to skip when saving 'original' versions from main album
+_SKIP_ORIGINAL_FIELDS = frozenset(['duration', '__length', '#cover-url', '#canonical-url'])
 
 
 def _normalize_value_for_compare(value):
@@ -898,7 +902,7 @@ def _ensure_basic_info(info, main_album_url):
     
     - Fields missing from release are filled in from main album
     - Fields present in both are kept from release, with main album's version
-      saved as 'original_<field>' only if the values differ
+      saved as 'original<field>' only if the values differ
     """
     if not main_album_url:
         return
@@ -910,20 +914,21 @@ def _ensure_basic_info(info, main_album_url):
         if isempty(value):
             continue
         field_lower = field.lower()
+        if field_lower.startswith('#') or field_lower in _SKIP_ORIGINAL_FIELDS:
+            continue
         if field_lower in existing_keys:
             # Release has this field - check if values differ
             actual_key = _find_existing_key(info, field_lower)
             existing_value = info.get(actual_key) if actual_key else None
             # Compare normalized values
             if _normalize_value_for_compare(existing_value) != _normalize_value_for_compare(value):
-                original_field = 'original_' + field_lower
+                original_field = 'original' + field_lower
                 info[original_field] = value
                 write_log("Saved main album '%s' as '%s'." % (field, original_field))
         else:
             # Release doesn't have this field - fill it in
             info[field] = value
             existing_keys.add(field_lower)
-            write_log("Filled in '%s' from main album page." % field)
             write_log("Filled in '%s' from main album page." % field)
 
 
