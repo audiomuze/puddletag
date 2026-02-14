@@ -36,6 +36,7 @@ RELEASE_ID = 'amg_release_id'
 release_order = ('year', 'type', 'label', 'catalog')
 search_adress = 'https://www.allmusic.com/search/albums/%s'
 album_url = 'https://www.allmusic.com/album/'
+ALLMUSIC_BASE = 'https://www.allmusic.com'
 ALLMUSIC_USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
@@ -1079,7 +1080,10 @@ def _extract_credits(soup):
             if anchor is not None:
                 href = anchor.element.attrib.get('href')
                 if href:
-                    artist_url = iri_to_uri(href)
+                    if href.startswith('/'):
+                        artist_url = ALLMUSIC_BASE + href
+                    else:
+                        artist_url = iri_to_uri(href)
         role_block = cell.find('span', {'class': 'artistCredits'})
         roles_text = element_text(role_block)
         if not name and not roles_text:
@@ -1166,7 +1170,11 @@ def parse_release_albumpage(page, album_soup, album_url=None):
         if anchor is not None:
             href = anchor.element.attrib.get('href')
             if href:
-                info['#main-album-url'] = iri_to_uri(href)
+                if href.startswith('/'):
+                    full_url = ALLMUSIC_BASE + href
+                else:
+                    full_url = iri_to_uri(href)
+                info['#main-album-url'] = full_url
                 album_id = extract_album_id_from_url(href)
                 if album_id:
                     info[ALBUM_ID] = album_id
@@ -1308,7 +1316,6 @@ def parse_search_element(entry, id_field=ALBUM_ID):
     info = {
         'album': convert(link.string),
         '#albumurl': iri_to_uri(url),
-        'amg_url': iri_to_uri(url),
     }
 
     artist_block = info_block.find('div', {'class': 'artist'})
@@ -1692,7 +1699,14 @@ def retrieve_album(url, coverurl=None, id_field=ALBUM_ID):
         info, tracks = parse_albumpage(album_page, album_url=url)
         resolved_url = info.get('#canonical-url', url)
         info['#albumurl'] = resolved_url
-        info['amg_url'] = resolved_url
+        # Set appropriate URL tag based on whether this is a release or main album
+        if RELEASE_ID in info:
+            info['amg_release_url'] = resolved_url
+            main_url = info.get('#main-album-url')
+            if main_url:
+                info['amg_mainalbum_url'] = main_url
+        else:
+            info['amg_mainalbum_url'] = resolved_url
 
         if 'album' in info:
             info['#extrainfo'] = [
