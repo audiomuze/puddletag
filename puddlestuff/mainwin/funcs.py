@@ -26,6 +26,11 @@ status = {}
 _TAGS_MIME_TYPE = 'application/x.puddletag.tags'
 
 
+def _selected_files_snapshot():
+    selected = status['selectedfiles']
+    return selected if selected else []
+
+
 def applyaction(files=None, funcs=None):
     if files is None:
         files = status['selectedfiles']
@@ -36,7 +41,8 @@ def applyaction(files=None, funcs=None):
             r = findfunc.apply_actions
     except IndexError:
         return
-    state = {'__total_files': str(len(files))}
+    state = {'__total_files': str(len(files)),
+             '__selectedfiles': _selected_files_snapshot()}
     state['__files'] = files
 
     def func():
@@ -53,7 +59,8 @@ def applyquickaction(files, funcs):
         qa = findfunc.apply_actions
 
     selected = status['selectedtags']
-    state = {'__total_files': str(len(selected))}
+    state = {'__total_files': str(len(selected)),
+             '__selectedfiles': _selected_files_snapshot()}
     t = (qa(funcs, f, state, list(s.keys())) for f, s in zip(files, selected))
     emit('writeselected', t)
 
@@ -222,7 +229,8 @@ def format(parent=None, preview=None):
     ret = []
     tf = findfunc.tagtofilename
 
-    state = {'__total_files': str(len(files))}
+    state = {'__total_files': str(len(files)),
+             '__selectedfiles': _selected_files_snapshot()}
     for i, (audio, s) in enumerate(zip(files, selected)):
         state['__counter'] = str(i + 1)
         val = tf(pattern, audio, state=state)
@@ -447,7 +455,8 @@ def run_func(selectedfiles, func):
     selectedtags = status['selectedtags']
 
     function = func.runFunction
-    state = {'__total_files': str(len(selectedtags))}
+    state = {'__total_files': str(len(selectedtags)),
+             '__selectedfiles': _selected_files_snapshot()}
 
     def tagiter():
         for i, (selected, f) in enumerate(zip(selectedtags, selectedfiles)):
@@ -505,7 +514,8 @@ def tag_to_file():
     files = status['selectedfiles']
 
     tf = functions.move
-    state = {'__total_files': str(len(files))}
+    state = {'__total_files': str(len(files)),
+             '__selectedfiles': _selected_files_snapshot()}
 
     def rename():
         for i, f in enumerate(files):
@@ -548,7 +558,8 @@ def update_status(enable=True):
         return
     tag = files[0]
 
-    state = {'__counter': '1', '__total_files': str(len(files))}
+    state = {'__counter': '1', '__total_files': str(len(files)),
+             '__selectedfiles': _selected_files_snapshot()}
 
     x = findfunc.filenametotag(pattern, tag[PATH], True)
     emit('ftstatus', display_tag(x))

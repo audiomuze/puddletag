@@ -46,8 +46,10 @@ from unidecode import unidecode
 import pyparsing
 
 from . import audioinfo
+from . import context
 from .audioinfo import encode_fn
 from .puddleobjects import (safe_name, fnmatch, natural_sort_key)
+from .util import to_string
 
 PATH = audioinfo.PATH
 DIRPATH = audioinfo.DIRPATH
@@ -73,6 +75,84 @@ def _pad(text, numlen):
     if len(text) < numlen:
         text = _padding * ((numlen - len(text)) // len(_padding)) + text
     return text
+
+
+def _normalize_tagname(tagname):
+    name = to_string(tagname).strip()
+    if name.startswith('%') and name.endswith('%') and len(name) > 2:
+        name = name[1:-1]
+    return name
+
+
+def _get_selected_group(state):
+    selected = None
+    if state is not None:
+        selected = state.get('__selectedfiles')
+    if not selected:
+        selected = context.get_selected_files()
+    return selected or []
+
+
+def _get_tag_value(tags, tagname):
+    if tags is None:
+        return None
+    getter = getattr(tags, 'get', None)
+    if callable(getter):
+        value = getter(tagname, None)
+    else:
+        try:
+            value = tags[tagname]
+        except Exception:
+            value = getattr(tags, tagname, None)
+    return value
+
+
+def identical(p_tagname=None, state=None):
+    '''Identical, Returns 1 if all selected files have the same value for the given tagname.
+&Tag name or %field%, text'''
+    if not p_tagname:
+        raise FuncError('Tag name required for $identical.')
+    tagname = _normalize_tagname(p_tagname)
+    if not tagname:
+        raise FuncError('Tag name required for $identical.')
+    selected = _get_selected_group(state)
+    if not selected:
+        return false
+    reference = None
+    for tags in selected:
+        value = _get_tag_value(tags, tagname)
+        if value is None:
+            return false
+        normalized = to_string(value)
+        if reference is None:
+            reference = normalized
+        elif normalized != reference:
+            return false
+    return true if reference is not None else false
+
+
+def alleq(p_tagname=None, value=None, state=None):
+    '''All Equal, Returns 1 if every selected file's tag equals the provided value.
+&Tag name or %field%, text
+&Value to compare, text'''
+    if not p_tagname:
+        raise FuncError('Tag name required for $alleq.')
+    if value is None:
+        raise FuncError('Comparison value required for $alleq.')
+    tagname = _normalize_tagname(p_tagname)
+    if not tagname:
+        raise FuncError('Tag name required for $alleq.')
+    expected = to_string(value)
+    selected = _get_selected_group(state)
+    if not selected:
+        return false
+    for tags in selected:
+        current = _get_tag_value(tags, tagname)
+        if current is None:
+            return false
+        if to_string(current) != expected:
+            return false
+    return true
 
 
 def autonumbering(r_tags, minimum=1, restart=False, padding=1, state=None):
@@ -1059,6 +1139,8 @@ functions = {
     "caps3": caps3,
     "ceiling": ceiling,
     "char": char,
+    "identical": identical,
+    "alleq": alleq,
     "div": div,
     "enconvert": enconvert,
     "equals": eql,

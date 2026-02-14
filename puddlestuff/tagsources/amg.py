@@ -1,5 +1,7 @@
+import inspect
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -12,7 +14,16 @@ from puddlestuff.audioinfo import isempty, CaselessDict
 from puddlestuff.constants import CHECKBOX
 from puddlestuff.puddleobjects import ratio
 from puddlestuff.tagsources import (write_log, set_status, RetrievalError,
-                          urlopen, parse_searchstring, retrieve_cover, get_encoding, iri_to_uri)
+                          urlopen, parse_searchstring, retrieve_cover, get_encoding, iri_to_uri,
+                          get_useragent, set_useragent)
+
+try:
+    _URL_OPEN_SUPPORTS_HEADERS = 'headers' in inspect.signature(urlopen).parameters
+except (AttributeError, TypeError, ValueError):
+    # Default to assuming header support; we'll detect lack of support at runtime.
+    _URL_OPEN_SUPPORTS_HEADERS = True
+
+_HEADERS_FALLBACK_LOGGED = False
 
 
 class OldURLError(RetrievalError):
@@ -20,10 +31,127 @@ class OldURLError(RetrievalError):
 
 
 ALBUM_ID = 'amg_album_id'
+RELEASE_ID = 'amg_release_id'
 
 release_order = ('year', 'type', 'label', 'catalog')
-search_adress = 'http://www.allmusic.com/search/albums/%s'
-album_url = 'http://www.allmusic.com/album/'
+search_adress = 'https://www.allmusic.com/search/albums/%s'
+album_url = 'https://www.allmusic.com/album/'
+ALLMUSIC_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:146.0) Gecko/20100101 Firefox/146.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 OPR/122.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 OPR/125.0.0.0",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.2 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.2 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) obsidian/1.8.4 Chrome/130.0.6723.191 Electron/33.3.2 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/29.0 Chrome/136.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 26_1_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/143.0.7499.151 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 15; F-52E Build/V34RD51A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/143.0.7499.115 Mobile Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.5112.81 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.5249.119 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/105.0.0.0 Safari/537.3",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) obsidian/1.10.6 Chrome/138.0.7204.251 Electron/37.10.2 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 26_2_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/143.0.7499.151 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Cursor/2.2.44 Chrome/138.0.7204.251 Electron/37.7.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) TikTokLIVEStudio/1.12.0 Chrome/136.0.7103.59 Electron/36.4.0-rs.18.release.ls.26 TTElectron/36.4.0-rs.18.release.ls.26 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0.1 Safari/605.1.15",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 YaBrowser/25.12.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win32; x86) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/143.0.7499.151 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 OPR/125.0.0.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/143.0.7499.151 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.51 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+]
+
+
+class _AllMusicUserAgent:
+    """Temporarily override puddletag's User-Agent with a random browser."""
+
+    def __enter__(self):
+        self.previous = get_useragent()
+        self.current = random.choice(ALLMUSIC_USER_AGENTS)
+        set_useragent(self.current)
+        return self.current
+
+    def __exit__(self, exc_type, exc, tb):
+        set_useragent(self.previous)
+        return False
 
 spanmap = CaselessDict({
     'Genre': 'genre',
@@ -33,6 +161,7 @@ spanmap = CaselessDict({
     'Moods': 'mood',
     'Release Date': 'year',
     'Recording Date': 'recording_date',
+    'Recording Location': 'recordinglocation',
     'Label': 'label',
     'Album': 'album',
     'Artist': 'artist',
@@ -62,6 +191,8 @@ spanmap = CaselessDict({
 })
 
 sqlre = re.compile(r'(r\d+)$')
+gallery_re = re.compile(r'var\s+imageGallery\s*=\s*(\[[^\]]+\])', re.S)
+album_id_re = re.compile(r'-(m[wr][0-9a-z]+)$', re.I)
 
 first_white = lambda match: match.groups()[0][0]
 
@@ -80,11 +211,65 @@ white_replace = lambda match: match.group()[0]
 
 
 def convert(value):
+    if value is None:
+        return ''
+    if not isinstance(value, str):
+        value = str(value)
     text = value.strip()
     text = re.sub(r'\s{2,}', white_replace, text)
-    if isinstance(text, str):
-        return str(text)
     return text
+
+
+def element_text(element):
+    if element is None:
+        return ''
+    text = element.string
+    if text:
+        return convert(text)
+    return convert(element.all_recursive_text())
+
+
+def extract_canonical_url(album_soup):
+    canonical = album_soup.find('link', {'rel': 'canonical'})
+    if canonical is None:
+        return None
+    href = canonical.element.attrib.get('href')
+    if href:
+        return iri_to_uri(href)
+    return None
+
+
+def extract_linked_text(block):
+    if block is None:
+        return ''
+    anchors = block.find_all('a')
+    if anchors:
+        parts = [element_text(anchor) for anchor in anchors]
+        parts = [part for part in parts if part]
+        if parts:
+            return '\\\\\\'.join(parts)
+    return element_text(block)
+
+
+def decode_data_attribute(value):
+    if not value:
+        return ''
+    return convert(urllib.parse.unquote_plus(value))
+
+
+def decode_page(page):
+    if isinstance(page, bytes):
+        return page.decode('utf-8', 'ignore')
+    return page
+
+
+def extract_album_id_from_url(url):
+    if not url:
+        return None
+    match = album_id_re.search(url)
+    if match:
+        return match.group(1).lower()
+    return None
 
 
 def convert_year(info):
@@ -96,15 +281,27 @@ def convert_year(info):
 
     if not isinstance(info['year'], str):
         info['year'] = info['year'][0]
-    try:
-        year = time.strptime(info['year'], '%B %d, %Y')
-        return {'year': time.strftime('%Y-%m-%d', year)}
-    except ValueError:
+    info['year'] = info['year'].strip()
+
+    formats = [
+        ('%B %d, %Y', '%Y-%m-%d'),
+        ('%B %d %Y', '%Y-%m-%d'),
+        ('%b %d, %Y', '%Y-%m-%d'),
+        ('%b %d %Y', '%Y-%m-%d'),
+        ('%B %Y', '%Y-%m'),
+        ('%B, %Y', '%Y-%m'),
+        ('%b %Y', '%Y-%m'),
+        ('%Y', '%Y'),
+    ]
+
+    for fmt, output_fmt in formats:
         try:
-            year = time.strptime(info['year'], '%b %Y')
-            return {'year': time.strftime('%Y-%m', year)}
+            year = time.strptime(info['year'], fmt)
+            return {'year': time.strftime(output_fmt, year)}
         except ValueError:
-            return {}
+            continue
+
+    return {'year': info['year']}
 
 
 def create_search(terms):
@@ -141,14 +338,41 @@ def parse_rating(dd):
 
 def parse_review(content):
     reviewer = content.find('h4', {'class': 'review-author headline'})
-    if not reviewer:
+    if reviewer:
+        author = convert(reviewer.string)
+        text_section = content.find('div', {'class': 'text'})
+        paragraphs = []
+        if text_section is not None and text_section.find('p') is not None:
+            paragraphs.append(element_text(text_section.find('p')))
+        else:
+            paragraphs = [element_text(p) for p in content.find_all('p')]
+        paragraphs = [p for p in paragraphs if p]
+        if paragraphs:
+            text = '\n\n'.join(paragraphs)
+            return {'review': author + '\n\n' + text}
         return {}
 
-    author = convert(reviewer.string)
+    heading = content.find('h3')
+    paragraphs = [element_text(p) for p in content.find_all('p')]
+    if not any(paragraphs):
+        text_section = content.find('div', {'class': 'text'})
+        if text_section is not None:
+            paragraphs = [element_text(text_section)]
+    paragraphs = [p for p in paragraphs if p]
+    if not paragraphs:
+        return {}
 
-    text = convert(content.find('div', {'class': 'text'}).p.string)
+    text = '\n\n'.join(paragraphs)
+    author = None
+    if heading is not None:
+        heading_text = element_text(heading)
+        match = re.search(r'\bby\s+(.+)', heading_text, re.IGNORECASE)
+        if match:
+            author = match.group(1).strip()
 
-    return {'review': author + '\n\n' + text}
+    if author:
+        return {'review': author + '\n\n' + text}
+    return {'review': text}
 
 
 def parse_similar(swipe):
@@ -171,10 +395,64 @@ def parse_similar(swipe):
     return {}
 
 
-def parse_albumpage(page, artist=None, album=None):
+def parse_albumpage(page, artist=None, album=None, album_url=None):
+    album_soup = parse_html.SoupWrapper(parse_html.parse(page))
+
+    if album_soup.find('div', {'id': 'releaseHeader'}):
+        return parse_release_albumpage(page, album_soup, album_url=album_url)
+
+    if album_soup.find('div', {'id': 'albumHeadline'}):
+        return parse_modern_albumpage(page, album_soup, artist, album, album_url)
+
     info = {}
 
-    album_soup = parse_html.SoupWrapper(parse_html.parse(page))
+    def extract_artist_from_jsonld():
+        release_headline = album_soup.find('div', {'id': 'releaseHeadline'})
+        if release_headline is not None:
+            headline_artist = release_headline.find('h2')
+            if headline_artist is not None:
+                anchor = headline_artist.find('a')
+                if anchor is not None and anchor.string:
+                    text = convert(anchor.string)
+                    if text:
+                        return text
+                if headline_artist.string:
+                    text = convert(headline_artist.string)
+                    if text:
+                        return text
+        scripts = album_soup.find_all('script')
+        for script in scripts:
+            try:
+                tag = script.element.tag
+            except AttributeError:
+                continue
+            if tag != 'script':
+                continue
+            script_type = script.element.attrib.get('type', '')
+            if script_type.lower() != 'application/ld+json':
+                continue
+            data = script.string or ''
+            if not data.strip():
+                continue
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            release_of = payload.get('releaseOf')
+            if not isinstance(release_of, dict):
+                continue
+            by_artist = release_of.get('byArtist')
+            if isinstance(by_artist, dict):
+                candidates = [by_artist]
+            elif isinstance(by_artist, list):
+                candidates = [entry for entry in by_artist if isinstance(entry, dict)]
+            else:
+                continue
+            for candidate in candidates:
+                name = candidate.get('name')
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
+        return None
 
     album = album_soup.find('h1', {'class': 'album-title'})
     artist = album_soup.find('h2', {'class': 'album-artist'})
@@ -190,24 +468,51 @@ def parse_albumpage(page, artist=None, album=None):
         artist = album_soup.find('h3', 'release-artist')
 
     if album is None:
-        info.update({'artist': convert(artist.string), 'album': ''})
+        artist_text = convert(artist.string) if artist is not None else None
+        if artist_text is None:
+            artist_text = extract_artist_from_jsonld()
+        if artist_text:
+            info.update({'artist': artist_text, 'album': ''})
+        else:
+            info.update({'album': ''})
     else:
-        info.update({'artist': convert(artist.string), 'album': convert(album.string)})
-    info['albumartist'] = info['artist']
+        artist_text = convert(artist.string) if artist is not None else None
+        if artist_text is None:
+            artist_text = extract_artist_from_jsonld()
+        if artist_text:
+            info.update({'artist': artist_text, 'album': convert(album.string)})
+        else:
+            info.update({'album': convert(album.string)})
+    if 'artist' in info:
+        info['albumartist'] = info['artist']
 
     sidebar = album_soup.find('div', {'class': 'sidebar'})
-    info.update(parse_sidebar(sidebar))
+    if sidebar is not None:
+        info.update(parse_sidebar(sidebar))
+    else:
+        write_log('AllMusic: sidebar not found for legacy layout; continuing without sidebar metadata.')
     info.update(convert_year(info))
 
-    content = album_soup.find('section', {'class': 'review read-more'})
+    content = _locate_review_section(album_soup)
+    if content is None:
+        ajax_soup = fetch_review_soup(album_url)
+        content = _locate_review_section(ajax_soup)
     if content:
         info.update(parse_review(content))
+
+    canonical = extract_canonical_url(album_soup)
+    fallback_url = canonical or album_url
+    _ensure_moods_themes(info, album_soup, fallback_url)
+    _ensure_credits(info, album_soup, fallback_url)
 
     # swipe = main.find('div', {'id':"similar-albums", 'class':"grid-gallery"})
 
     # info.update(parse_similar(swipe))
 
     info = dict((spanmap.get(k, k), v) for k, v in info.items() if not isempty(v))
+
+    if canonical:
+        info['#canonical-url'] = canonical
 
     return [info, parse_tracks(album_soup, info)]
 
@@ -221,8 +526,21 @@ def parse_sidebar_element(element):
     if element.find('span'):
         values = [convert(element.find('span').string)]
     elif element.find('div'):
-        anchors = element.find('div').find_all('a')
-        values = [convert(anchor.string) for anchor in anchors]
+        anchors = element.find_all('a')
+        values = []
+        if anchors:
+            values = [convert(anchor.string) for anchor in anchors]
+            values = [value for value in values if value and value.lower() not in ('see more', 'see all')]
+        if not values:
+            values = []
+            for div in element.find_all('div'):
+                text = div.string or getattr(div, 'text', None)
+                if text:
+                    values.append(convert(text))
+            if not values:
+                div = element.find('div')
+                if div and div.string:
+                    values = [convert(div.string)]
     elif element.find('ul'):
         values = [convert(z.string) for z in element.ul.find_all('li')]
     else:
@@ -289,55 +607,502 @@ def parse_sidebar(sidebar):
     return info
 
 
-def parse_search_element(td, id_field=ALBUM_ID):
-    """Parse search element td and returns dictionary with album info.
+def parse_basic_info_meta(album_soup):
+    info = {}
+    basic_info = album_soup.find('div', {'id': 'basicInfoMeta'})
+    if basic_info is None:
+        return info
 
-    Search pages contain all album info in a td element. This routine
-    parses the element and returns all info in dictionary with
-    the field as keys and value being the value.
-
-    Returns a dictionary with at least the following keys:
-    artist -- artist name found
-    album -- album name found
-    #albumurl -- link to album.
-    #extrainfo -- tuple with first item description text and second item
-                  a link to the album.
-    year -- album release year."""
-
-    def to_string(e):
+    for section in basic_info.element:
         try:
-            return convert(e.a.string)
+            tag = section.tag
         except AttributeError:
-            try:
-                return convert(e.string)
-            except AttributeError:
-                return ''
+            continue
+        if not isinstance(tag, str):
+            continue
+        wrapper = parse_html.SoupWrapper(section)
+        if not wrapper.find('h4'):
+            continue
+        info.update(parse_sidebar_element(wrapper))
+    return info
 
+
+def extract_gallery_cover(page):
+    html_text = decode_page(page)
+    match = gallery_re.search(html_text)
+    if not match:
+        return None
+    try:
+        images = json.loads(match.group(1))
+    except (ValueError, TypeError):
+        return None
+    for image in images:
+        url = image.get('zoomURL') or image.get('url')
+        if url:
+            if url.startswith('//'):
+                url = 'https:' + url
+            return url
+    return None
+
+
+def parse_modern_cover(album_soup, page):
+    cover_url = extract_gallery_cover(page)
+    if not cover_url:
+        image = album_soup.find('img', {'id': 'posterImage'})
+        if image is not None:
+            cover_url = (image.element.attrib.get('data-src') or
+                         image.element.attrib.get('src'))
+    if cover_url and cover_url.startswith('//'):
+        cover_url = 'https:' + cover_url
+    if cover_url:
+        return {'#cover-url': cover_url}
+    return {}
+
+
+def _normalize_album_url(album_url):
+    if not album_url:
+        return None
+    normalized = album_url.split('#', 1)[0].strip()
+    if normalized.endswith('/'):
+        normalized = normalized[:-1]
+    return normalized or album_url
+
+
+def _manual_urlopen_with_headers(url, headers=None):
+    request = urllib.request.Request(url)
+    headers = headers or {}
+    normalized = {key.lower(): value for key, value in headers.items() if value}
+    user_agent = get_useragent()
+    if user_agent and 'user-agent' not in normalized:
+        request.add_header('User-Agent', user_agent)
+    for header, value in headers.items():
+        if value is None:
+            continue
+        request.add_header(header, value)
+    try:
+        with urllib.request.build_opener().open(request) as response:
+            return response.read()
+    except urllib.error.URLError as exc:
+        raise RetrievalError(str(exc))
+
+
+def _fetch_tab_soup(album_url, tab_suffix, log_label):
+    global _URL_OPEN_SUPPORTS_HEADERS, _HEADERS_FALLBACK_LOGGED
+    normalized = _normalize_album_url(album_url)
+    if not normalized:
+        return None
+    ajax_url = iri_to_uri(f"{normalized}/{tab_suffix}")
+    headers = {'Referer': iri_to_uri(normalized)}
+    write_log(f"Fetching {log_label} via AJAX - {ajax_url}")
+    log_title = log_label.capitalize()
+    if _URL_OPEN_SUPPORTS_HEADERS:
+        try:
+            track_page = urlopen(ajax_url, headers=headers)
+        except TypeError as exc:
+            message = str(exc)
+            if 'headers' not in message:
+                raise
+            _URL_OPEN_SUPPORTS_HEADERS = False
+            if not _HEADERS_FALLBACK_LOGGED:
+                write_log("tagsources.urlopen() does not accept headers; falling back to manual request.")
+                _HEADERS_FALLBACK_LOGGED = True
+            try:
+                track_page = _manual_urlopen_with_headers(ajax_url, headers=headers)
+            except RetrievalError as exc:
+                write_log(f"{log_title} fallback fetch failed: {exc}")
+                return None
+        except RetrievalError as exc:
+            write_log(f"{log_title} AJAX fetch failed: {exc}")
+            return None
+    else:
+        if not _HEADERS_FALLBACK_LOGGED:
+            write_log("tagsources.urlopen() does not accept headers; falling back to manual request.")
+            _HEADERS_FALLBACK_LOGGED = True
+        try:
+            track_page = _manual_urlopen_with_headers(ajax_url, headers=headers)
+        except RetrievalError as exc:
+            write_log(f"{log_title} fallback fetch failed: {exc}")
+            return None
+    track_text = decode_page(track_page)
+    if isinstance(track_text, bytes):
+        track_text = track_text.decode('utf-8', 'ignore')
+    track_text = (track_text or '').strip()
+    if not track_text:
+        write_log(f"{log_title} AJAX response was empty; skipping {log_label}.")
+        return None
+    # AJAX responses omit charset info, so decode explicitly.
+    try:
+        parsed = parse_html.parse(track_text)
+    except Exception as exc:
+        write_log(f"{log_title} parse failed: {exc}")
+        return None
+    return parse_html.SoupWrapper(parsed)
+
+
+def fetch_tracklisting_soup(album_url):
+    return _fetch_tab_soup(album_url, 'trackListingAjax', 'track listing')
+
+
+def fetch_review_soup(album_url):
+    return _fetch_tab_soup(album_url, 'reviewAjax', 'review')
+
+
+def _locate_review_section(soup):
+    if soup is None:
+        return None
+    review_section = soup.find('div', {'id': 'review'})
+    if review_section is not None:
+        return review_section
+    return soup.find('section', {'class': 'review read-more'})
+
+
+def fetch_moods_themes_soup(album_url):
+    return _fetch_tab_soup(album_url, 'moodsThemesAjax', 'moods/themes')
+
+
+def _collect_mood_theme_values(container, node_id):
+    if container is None:
+        return []
+    target = container.find('div', {'id': node_id})
+    if target is None:
+        target = container.find('div', {'class': node_id})
+    if target is None:
+        return []
+    anchors = target.find_all('a')
+    values = [element_text(anchor) for anchor in anchors]
+    return [value for value in values if value]
+
+
+def _extract_moods_themes(soup):
+    if soup is None:
+        return {}
+    container = soup.find('div', {'id': 'moodsThemes'})
+    if container is None:
+        tab_content = soup.find('div', {'class': 'tabContent moodsThemes'})
+        if tab_content is not None:
+            nested = tab_content.find('div', {'id': 'moodsThemes'})
+            container = nested or tab_content
+    if container is None:
+        return {}
+    info = {}
+    moods = _collect_mood_theme_values(container, 'moodsGrid')
+    if moods:
+        info['mood'] = moods
+    themes = _collect_mood_theme_values(container, 'themesGrid')
+    if themes:
+        info['theme'] = themes
+    return info
+
+
+def _ensure_moods_themes(info, album_soup, album_url=None):
+    additions = _extract_moods_themes(album_soup)
+    if (not additions) and album_url:
+        ajax_soup = fetch_moods_themes_soup(album_url)
+        additions = _extract_moods_themes(ajax_soup)
+    if not additions:
+        return
+    for field, values in additions.items():
+        if not values:
+            continue
+        existing = info.get(field)
+        if existing:
+            continue
+        info[field] = values
+
+
+def fetch_credits_soup(album_url):
+    return _fetch_tab_soup(album_url, 'creditsAjax', 'credits')
+
+
+def _extract_credit_table(soup):
+    if soup is None:
+        return None
+    container = soup.find('div', {'id': 'credits'})
+    if container is None:
+        tab_content = soup.find('div', {'class': 'tabContent credits'})
+        if tab_content is not None:
+            nested = tab_content.find('div', {'id': 'credits'})
+            container = nested or tab_content
+    if container is None:
+        return None
+    table = container.find('table')
+    if table is None:
+        return None
+    return table
+
+
+def _split_roles(roles_text):
+    if not roles_text:
+        return []
+    parts = [part.strip() for part in roles_text.split(',')]
+    return [part for part in parts if part]
+
+
+def _normalize_role_tag(role):
+    if not role:
+        return None
+    cleaned = role.strip()
+    if not cleaned:
+        return None
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    cleaned = cleaned.lower()
+    cleaned = re.sub(r'[^0-9a-z]+', '_', cleaned)
+    cleaned = cleaned.strip('_')
+    return cleaned or None
+
+
+def _extract_credits(soup):
+    table = _extract_credit_table(soup)
+    if table is None:
+        return []
+    entries = []
+    rows = table.find_all('tr')
+    for row in rows:
+        cell = row.find('td', {'class': 'singleCredit'})
+        if cell is None:
+            continue
+        name_block = cell.find('span', {'class': 'artist'})
+        name = element_text(name_block)
+        artist_url = None
+        if name_block is not None:
+            anchor = name_block.find('a')
+            if anchor is not None:
+                href = anchor.element.attrib.get('href')
+                if href:
+                    artist_url = iri_to_uri(href)
+        role_block = cell.find('span', {'class': 'artistCredits'})
+        roles_text = element_text(role_block)
+        if not name and not roles_text:
+            continue
+        entry_text = name if not roles_text else f"{name} - {roles_text}"
+        entries.append({
+            'entry': entry_text,
+            'name': name or entry_text,
+            'roles': _split_roles(roles_text),
+            'artist_url': artist_url,
+        })
+    return entries
+
+
+def _ensure_credits(info, album_soup, album_url=None):
+    credits = _extract_credits(album_soup)
+    if not credits and album_url:
+        ajax_soup = fetch_credits_soup(album_url)
+        credits = _extract_credits(ajax_soup)
+    if not credits:
+        return
+
+    artist_urls = []
+    for entry in credits:
+        link = entry.get('artist_url')
+        if link and link not in artist_urls:
+            artist_urls.append(link)
+    if artist_urls:
+        existing_urls = info.get('amg_artists')
+        if not existing_urls:
+            info['amg_artists'] = artist_urls
+        else:
+            if not isinstance(existing_urls, list):
+                existing_urls = [existing_urls]
+                info['amg_artists'] = existing_urls
+            for link in artist_urls:
+                if link not in existing_urls:
+                    existing_urls.append(link)
+
+    for entry in credits:
+        roles = entry['roles'] or []
+        primary_value = entry.get('name') or entry.get('entry')
+        if not primary_value:
+            continue
+        for role in roles:
+            tag = _normalize_role_tag(role)
+            if tag is None:
+                continue
+            values = info.get(tag)
+            if not values:
+                info[tag] = [primary_value]
+                continue
+            if isinstance(values, list):
+                if primary_value not in values:
+                    values.append(primary_value)
+            else:
+                if values != primary_value:
+                    info[tag] = [values, primary_value]
+
+
+def parse_release_albumpage(page, album_soup, album_url=None):
     info = {}
 
-    album = td.find('div', {'class': 'title'})
+    release_headline = album_soup.find('div', {'id': 'releaseHeadline'})
+    if release_headline is not None:
+        title = release_headline.find('h1', {'id': 'releaseTitle'})
+        if title is not None:
+            info['album'] = convert(title.string)
+            release_id = title.element.attrib.get('data-releaseid')
+            if release_id:
+                info[RELEASE_ID] = release_id.strip().lower()
+        artist_block = release_headline.find('h2')
+        artist_text = extract_linked_text(artist_block)
+        if artist_text:
+            info['artist'] = artist_text
+            info['albumartist'] = artist_text
+        detail_block = release_headline.find('h3')
+        detail_text = element_text(detail_block)
+        if detail_text:
+            info['release'] = detail_text
 
-    info['album'] = to_string(album)
-    info['#albumurl'] = convert(album.a.element.attrib['href'])
-    info['amg_url'] = info['#albumurl']
+    main_album_section = album_soup.find('div', {'id': 'mainAlbum'})
+    if main_album_section is not None:
+        anchor = main_album_section.find('a')
+        if anchor is not None and anchor.string:
+            info.setdefault('main_album', convert(anchor.string))
+            href = anchor.element.attrib.get('href')
+            if href:
+                info['#main-album-url'] = iri_to_uri(href)
+                album_id = extract_album_id_from_url(href)
+                if album_id:
+                    info[ALBUM_ID] = album_id
 
-    info['artist'] = to_string(td.find('div', {'class': 'artist'}))
+    info.update(parse_basic_info_meta(album_soup))
+    info.update(convert_year(info))
 
-    if not info['artist']:
-        artist = to_string(td.find('div', {'class': 'title'}))
-        if ':' in artist:
-            artist = [z.strip() for z in artist.split(':', 1)]
-            info['artist'], info['album'] = artist
-        else:
-            info['album'] = artist
+    cover_info = parse_modern_cover(album_soup, page)
+    if cover_info:
+        info.update(cover_info)
 
-    info['year'] = to_string(td.find('div', {'class': 'year'}))
-    info['genre'] = to_string(td.find('div', {'class': 'genres'}))
+    canonical = extract_canonical_url(album_soup)
+    if canonical:
+        info['#canonical-url'] = canonical
+
+    _ensure_moods_themes(info, album_soup, info.get('#canonical-url') or album_url)
+    _ensure_credits(info, album_soup, info.get('#canonical-url') or album_url)
+
+    review_section = _locate_review_section(album_soup)
+    if review_section is None:
+        ajax_source = info.get('#canonical-url') or album_url
+        ajax_soup = fetch_review_soup(ajax_source)
+        review_section = _locate_review_section(ajax_soup)
+    if review_section is not None:
+        info.update(parse_review(review_section))
+
+    info = dict((spanmap.get(k, k), v) for k, v in info.items() if not isempty(v))
+
+    if 'artist' in info and 'albumartist' not in info:
+        info['albumartist'] = info['artist']
+
+    tracks = parse_tracks(album_soup, info)
+    if not tracks:
+        ajax_source = info.get('#canonical-url') or album_url
+        ajax_soup = fetch_tracklisting_soup(ajax_source)
+        if ajax_soup is not None:
+            ajax_tracks = parse_tracks(ajax_soup, info)
+            if ajax_tracks:
+                tracks = ajax_tracks
+
+    return [info, tracks]
+
+
+def parse_modern_albumpage(page, album_soup, artist=None, album=None, album_url=None):
+    info = {}
+
+    title = album_soup.find('h1', {'id': 'albumTitle'})
+    if title is not None:
+        info['album'] = convert(title.string)
+        album_id = title.element.attrib.get('data-albumid')
+        if album_id:
+            info[ALBUM_ID] = album_id.lower()
+    elif album:
+        info['album'] = album
+    else:
+        info['album'] = ''
+
+    artist_block = album_soup.find('h2', {'id': 'albumArtists'})
+    if artist_block is not None:
+        info['artist'] = element_text(artist_block)
+    elif artist:
+        info['artist'] = artist
+    if 'artist' in info:
+        info['albumartist'] = info['artist']
+
+    info.update(parse_basic_info_meta(album_soup))
+    info.update(convert_year(info))
+
+    cover_info = parse_modern_cover(album_soup, page)
+    if cover_info:
+        info.update(cover_info)
+
+    canonical = extract_canonical_url(album_soup)
+    if canonical:
+        info['#canonical-url'] = canonical
+
+    _ensure_moods_themes(info, album_soup, info.get('#canonical-url') or album_url)
+    _ensure_credits(info, album_soup, info.get('#canonical-url') or album_url)
+
+    review_section = _locate_review_section(album_soup)
+    if review_section is None:
+        ajax_source = info.get('#canonical-url') or album_url
+        ajax_soup = fetch_review_soup(ajax_source)
+        review_section = _locate_review_section(ajax_soup)
+    if review_section is not None:
+        info.update(parse_review(review_section))
+
+    info = dict((spanmap.get(k, k), v) for k, v in info.items() if not isempty(v))
+
+    if 'artist' in info and 'albumartist' not in info:
+        info['albumartist'] = info['artist']
+
+    tracks = parse_tracks(album_soup, info)
+    if not tracks:
+        ajax_source = info.get('#canonical-url') or album_url
+        ajax_soup = fetch_tracklisting_soup(ajax_source)
+        if ajax_soup is not None:
+            ajax_tracks = parse_tracks(ajax_soup, info)
+            if ajax_tracks:
+                tracks = ajax_tracks
+
+    return [info, tracks]
+
+
+def parse_search_element(entry, id_field=ALBUM_ID):
+    """Parse a search-result entry and return normalized album info."""
+
+    info_block = entry.find('div', {'class': 'info'})
+    if info_block is None:
+        info_block = entry
+
+    title_block = info_block.find('div', {'class': 'title'})
+    link = title_block.find('a') if title_block is not None else None
+    if link is None:
+        return {}
+
+    url = link.element.attrib.get('href', '')
+    if not url:
+        return {}
+
+    info = {
+        'album': convert(link.string),
+        '#albumurl': iri_to_uri(url),
+        'amg_url': iri_to_uri(url),
+    }
+
+    artist_block = info_block.find('div', {'class': 'artist'})
+    if artist_block is not None:
+        info['artist'] = element_text(artist_block)
+
+    year_block = info_block.find('div', {'class': 'year'})
+    if year_block is not None:
+        info['year'] = element_text(year_block)
+
+    genre_block = info_block.find('div', {'class': 'genres'})
+    if genre_block is not None:
+        info['genre'] = element_text(genre_block)
 
     info['#extrainfo'] = [
         info['album'] + ' at AllMusic.com', info['#albumurl']]
 
-    info[id_field] = re.search(r'-(mw\d+)$', info['#albumurl']).groups()[0]
+    album_id = extract_album_id_from_url(info['#albumurl'])
+    if album_id:
+        info[id_field] = album_id
 
     return dict((k, v) for k, v in info.items() if not isempty(v))
 
@@ -359,14 +1124,20 @@ def parse_searchpage(page, artist=None, album=None, id_field=ALBUM_ID):
 
     """
     soup = parse_html.SoupWrapper(parse_html.parse(page))
-    result_table = soup.find('ul', {'class': 'search-results'})
-    try:
-        results = result_table.find_all('div',
-                                        {'class': 'info'})
-    except AttributeError:
-        return []
+    results = []
 
-    albums = [parse_search_element(result) for result in results]
+    result_container = soup.find('div', {'id': 'resultsContainer'})
+    if result_container is not None:
+        results = result_container.find_all('div', {'class': 'album'})
+    else:
+        legacy = soup.find('ul', {'class': 'search-results'})
+        if legacy is not None:
+            results = legacy.find_all('div', {'class': 'info'})
+
+    albums = [parse_search_element(result, id_field=id_field) for result in results]
+    albums = [album_info for album_info in albums if album_info]
+    if not albums:
+        return []
 
     d = {}
     if artist and album:
@@ -381,12 +1152,14 @@ def parse_searchpage(page, artist=None, album=None, id_field=ALBUM_ID):
     elif artist:
         d = {'artist': artist}
         top = [album for album in albums if equal(d, album, True, ['artist'])]
-        if not ret:
+        if not top:
             top = [album for album in albums if
                    equal(d, album, False, ['artist'])]
     else:
         top = []
 
+    if top:
+        return True, top
     return False, albums
 
 
@@ -413,6 +1186,77 @@ def parse_track_table(table, discnum=None):
         t = parse_track(item, fields, performance_title)
         tracks.append(t)
     return tracks
+
+
+def parse_modern_disc(disc):
+    track_divs = disc.find_all('div', {'class': re.compile(r'(?:^|\s)track(?:\s|$)')})
+    tracks = []
+    for track_div in track_divs:
+        track_info = parse_modern_track(track_div)
+        if track_info:
+            tracks.append(track_info)
+    return tracks
+
+
+def parse_modern_track(track_div):
+    track = {}
+
+    number = track_div.find('div', {'class': 'trackNum'})
+    if number is not None:
+        track_number = element_text(number)
+        if track_number:
+            track['track'] = track_number
+
+    title_block = track_div.find('div', {'class': 'title'})
+    if title_block is not None:
+        link = title_block.find('a')
+        if link is not None and link.string:
+            track['title'] = convert(link.string)
+            href = link.element.attrib.get('href')
+            if href:
+                track['#trackurl'] = iri_to_uri(href)
+        else:
+            track['title'] = element_text(title_block)
+
+    composer_block = track_div.find('div', {'class': 'composer'})
+    if composer_block is not None:
+        composer_text = extract_linked_text(composer_block)
+        if composer_text:
+            track['composer'] = composer_text
+
+    performer_block = track_div.find('div', {'class': 'performer'})
+    if performer_block is not None:
+        performer_text = extract_linked_text(performer_block)
+        if performer_text:
+            track['performer'] = performer_text
+
+    duration_block = track_div.find('div', {'class': 'duration'})
+    if duration_block is not None:
+        duration = element_text(duration_block)
+        if duration:
+            track['__length'] = duration
+
+    favorite = track_div.find('button', {'class': 'songFavoriteIcon'})
+    if favorite is not None:
+        track_id = favorite.element.attrib.get('data-id')
+        if track_id:
+            track['amg_track_id'] = track_id.strip()
+        if 'performer' not in track:
+            performer_raw = favorite.element.attrib.get('data-artist')
+            performer_text = decode_data_attribute(performer_raw)
+            if performer_text:
+                track['performer'] = performer_text
+        if 'title' not in track:
+            title_raw = favorite.element.attrib.get('data-title')
+            title_text = decode_data_attribute(title_raw)
+            if title_text:
+                track['title'] = title_text
+
+    if 'performer' in track:
+        track['artist'] = track['performer']
+        del track['performer']
+
+    return dict((spanmap.get(k, k), v) for k, v in track.items() if spanmap.get(k, k) and not isempty(v))
 
 
 def parse_track(tr, fields, performance_title=None):
@@ -448,8 +1292,9 @@ def parse_track(tr, fields, performance_title=None):
             track[field] = convert(td.string)
     if performance_title and 'title' in track:
         track['title'] = performance_title + ': ' + track['title']
-    if 'artist' not in track and 'performer' in track:
+    if 'performer' in track:
         track['artist'] = track['performer']
+        del track['performer']
     return dict((spanmap.get(k, k), v) for k, v in track.items() if spanmap.get(k, k) and not isempty(v))
 
 
@@ -475,13 +1320,25 @@ def replace_feat(album_info, track_info):
 def parse_tracks(content, album_info):
     discs = content.find_all('div', 'disc')
     if not discs:
-        return None
+        return []
     tracks = []
+    total_discs = len(discs)
     for i, disc in enumerate(discs):
-        disc_info = {'discnumber': str(i + 1)}
-        disc_tracks = parse_track_table(disc.table)
+        disc_number = str(i + 1)
+        disc_title = disc.find('h3')
+        disc_subtitle = element_text(disc_title) if disc_title is not None else ''
+        disc_info = {}
+        if total_discs > 1:
+            disc_info['discnumber'] = disc_number
+        if disc_subtitle:
+            disc_info['discsubtitle'] = disc_subtitle
+        table = getattr(disc, 'table', None)
+        if table is not None:
+            disc_tracks = parse_track_table(table)
+        else:
+            disc_tracks = parse_modern_disc(disc)
         for track in disc_tracks:
-            if len(discs) > 1:
+            if disc_info:
                 track.update(disc_info)
             replace_feat(album_info, track)
 
@@ -491,38 +1348,40 @@ def parse_tracks(content, album_info):
 
 def retrieve_album(url, coverurl=None, id_field=ALBUM_ID):
     write_log('Opening Album Page - %s' % url)
-    album_page, code = urlopen(url, False, True)
-    if album_page.find(b"featured new releases") >= 0:
-        raise OldURLError("Old AMG URL used.")
+    cover = None
+    with _AllMusicUserAgent():
+        album_page, code = urlopen(url, False, True)
+        if album_page.find(b"featured new releases") >= 0:
+            raise OldURLError("Old AMG URL used.")
 
-    info, tracks = parse_albumpage(album_page)
-    info['#albumurl'] = url
-    info['amg_url'] = url
+        info, tracks = parse_albumpage(album_page, album_url=url)
+        resolved_url = info.get('#canonical-url', url)
+        info['#albumurl'] = resolved_url
+        info['amg_url'] = resolved_url
 
-    if 'album' in info:
-        info['#extrainfo'] = [
-            info['album'] + ' at AllMusic.com', info['#albumurl']]
+        if 'album' in info:
+            info['#extrainfo'] = [
+                info['album'] + ' at AllMusic.com', info['#albumurl']]
 
-    if coverurl:
-        try:
-            write_log('Retrieving Cover - %s' % info['#cover-url'])
-            cover = retrieve_cover(info['#cover-url'])
-        except KeyError:
-            write_log('No cover found.')
-            cover = None
-        except urllib.error.URLError as e:
-            write_log('Error: While retrieving cover %s - %s' %
-                      (info['#cover-url'], str(e)))
-            cover = None
-    else:
-        cover = None
+        if coverurl:
+            try:
+                write_log('Retrieving Cover - %s' % info['#cover-url'])
+                cover = retrieve_cover(info['#cover-url'])
+            except KeyError:
+                write_log('No cover found.')
+                cover = None
+            except urllib.error.URLError as e:
+                write_log('Error: While retrieving cover %s - %s' %
+                          (info['#cover-url'], str(e)))
+                cover = None
     return info, tracks, cover
 
 
 def search(album):
     search_url = create_search(album.replace('/', ' '))
     write_log('Search URL - %s' % search_url)
-    return urlopen(iri_to_uri(search_url))
+    with _AllMusicUserAgent():
+        return urlopen(iri_to_uri(search_url))
 
 
 def text(z):
@@ -543,6 +1402,7 @@ class AllMusic(object):
     name = 'AllMusic.com'
     tooltip = "Enter search parameters here. If empty, the selected files are used. <ul><li><b>artist;album</b> searches for a specific album/artist combination.</li> <li>To list the albums by an artist leave off the album part, but keep the semicolon (eg. <b>Ratatat;</b>). For a album only leave the artist part as in <b>;Resurrection.</li><li>By prefacing the search text with <b>:id</b> you can search for an albums using it's AllMusic sql id eg. <b>:id 10:nstlgr7nth</b> (extraneous spaces are discarded.)<li></ul>"
     group_by = ['album', 'artist']
+    _candidate_threshold = 0.55
 
     def __init__(self):
         super(AllMusic, self).__init__()
@@ -625,8 +1485,49 @@ class AllMusic(object):
         else:
             write_log('No exact matches found for: %s - %s' %
                       (artist, album))
-            ret.extend([(z, []) for z in matches])
+            filtered = self._filter_candidates(album, artist, matches)
+            if not filtered:
+                ret.extend([(z, []) for z in matches])
+            else:
+                ret.extend([(z, []) for z in filtered])
         return ret
+
+    def _filter_candidates(self, album, artist, candidates):
+        if not candidates:
+            return []
+        target_album = (album or '').strip().lower()
+        target_artist = (artist or '').strip().lower()
+        if not target_album and not target_artist:
+            return candidates
+
+        passed = []
+        for info in candidates:
+            album_score = ratio(target_album, info.get('album', '').lower()) \
+                if target_album and 'album' in info else 0.0
+            artist_score = ratio(target_artist, info.get('artist', '').lower()) \
+                if target_artist and 'artist' in info else 0.0
+
+            if target_album and target_artist:
+                if album_score < self._candidate_threshold or \
+                        artist_score < self._candidate_threshold:
+                    continue
+                score = (album_score + artist_score) / 2.0
+            elif target_album:
+                if album_score < self._candidate_threshold:
+                    continue
+                score = album_score
+            else:
+                if artist_score < self._candidate_threshold:
+                    continue
+                score = artist_score
+            passed.append((score, info))
+
+        passed = [info for score, info in passed]
+        if passed and target_album:
+            passed.sort(key=lambda info: ratio(target_album,
+                                               info.get('album', '').lower()),
+                        reverse=True)
+        return passed
 
     def retrieve(self, albuminfo):
         try:

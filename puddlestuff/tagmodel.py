@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import QAbstractItemDelegate, QAbstractItemView, QApplicati
     QVBoxLayout
 
 from . import audioinfo
+from . import context
 from .audioinfo import (PATH, FILENAME, DIRPATH, FILETAGS, READONLY, INFOTAGS, DIRNAME,
                         EXTENSION, FILENAME_NO_EXT, PARENT_DIR, CaselessDict, encode_fn, decode_fn, get_filename_tags)
 from .puddleobjects import (unique, partial, natural_sort_key, gettag,
@@ -2245,6 +2246,7 @@ class TagTable(QTableView):
             selectedColumns.add(z.column())
         self.selectedRows = sorted(list(selectedRows))
         self.selectedColumns = sorted(list(selectedColumns))
+        context.set_selected_files(self.selectedTags)
 
         if self._select:
             self.itemSelectionChanged.emit()
