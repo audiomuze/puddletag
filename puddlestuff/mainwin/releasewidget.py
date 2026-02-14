@@ -28,6 +28,74 @@ no_disp_fields = ['__numtracks', '__image']
 pyqtRemoveInputHook()
 
 
+def _normalize_title_for_match(title):
+    """Normalize title for case-insensitive matching."""
+    if not title:
+        return ''
+    if isinstance(title, list):
+        title = title[0] if title else ''
+    normalized = str(title).lower().strip()
+    # Remove common punctuation that might differ
+    for char in '.,!?\'"-()[]':
+        normalized = normalized.replace(char, '')
+    return ' '.join(normalized.split())
+
+
+def _match_tracks_by_title(files, title_match_tracks, album_info, tags_to_write, mapping):
+    """Match user files to retrieved tracks by title, preserving user's track numbers.
+    
+    Returns a list of track dicts for each file, with metadata from matched tracks
+    but preserving the user's existing track/disc numbers.
+    """
+    if not files or not title_match_tracks:
+        return []
+    
+    # Build lookup from normalized title -> track metadata
+    track_lookup = {}
+    for track in title_match_tracks:
+        title = track.get('title') or track.get('track')
+        if title:
+            norm_title = _normalize_title_for_match(title)
+            if norm_title:
+                track_lookup[norm_title] = track
+    
+    result_tracks = []
+    for file_tags in files:
+        # Start with album info (this is the base for all files)
+        merged = {}
+        for key, val in album_info.items():
+            if not key.startswith('#') and key not in no_disp_fields:
+                merged[key] = val
+        
+        # Try to match by title
+        file_title = file_tags.get('title', '')
+        if isinstance(file_title, list):
+            file_title = file_title[0] if file_title else ''
+        norm_file_title = _normalize_title_for_match(file_title)
+        
+        matched_track = track_lookup.get(norm_file_title) if norm_file_title else None
+        
+        if matched_track:
+            # Apply all matched track metadata except track/disc numbers
+            for key, val in matched_track.items():
+                if key.startswith('#'):
+                    continue
+                if key in ('track', 'discnumber', 'totaltracks', 'totaldiscs'):
+                    continue
+                merged[key] = val
+        
+        # Apply tag filtering and mapping
+        if tags_to_write:
+            merged = {k: v for k, v in merged.items() 
+                     if k in tags_to_write or k.startswith('#')}
+        if mapping:
+            merged = {mapping.get(k, k): v for k, v in merged.items()}
+        
+        result_tracks.append(merged)
+    
+    return result_tracks
+
+
 def inline_display(pattern, tags):
     return parsefunc(pattern, tags)
 
@@ -655,10 +723,25 @@ class ReleaseWidget(QTreeView):
         items = [index.internalPointer() for index in self.selectedIndexes()]
         if len(items) == 1 and not isTrack(items[0]) \
                 and not items[0].hasTracks:
-            copytag = items[0].itemData.copy
-            tags = self.tagsToWrite
-            tracks = [strip(copytag(), tags, mapping=self.mapping) for z in
-                      self._status['selectedrows']]
+            item = items[0]
+            # Check for title-based matching tracks (from releases with no track listing)
+            title_match_tracks = item.itemData.get('#title_match_tracks')
+            if title_match_tracks:
+                # Match user files to tracks by title, preserving track numbers
+                files = [f.tags for f in self._status['selectedfiles']]
+                tracks = _match_tracks_by_title(
+                    files, title_match_tracks, item.itemData,
+                    self.tagsToWrite, self.mapping)
+            else:
+                # No title matching - just copy album info to all files
+                copytag = item.itemData.copy
+                tags = self.tagsToWrite
+                tracks = [strip(copytag(), tags, mapping=self.mapping) for z in
+                          self._status['selectedrows']]
+            if '#extrainfo' in item.itemData:
+                desc, url = item.itemData['#extrainfo']
+                self.infoChanged.emit(
+                    '<a href="%s">%s</a>' % (url, desc))
         else:
             singles = []
             albums = []

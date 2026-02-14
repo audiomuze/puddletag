@@ -910,6 +910,123 @@ def _fetch_main_album_info(main_album_url):
 _SKIP_ORIGINAL_FIELDS = frozenset(['duration', '__length', '#cover-url', '#canonical-url', 'date'])
 
 
+def _fetch_main_album_tracks_with_reviews(main_album_url):
+    """Fetch track listing from main album page and return tracks with reviews populated."""
+    if not main_album_url:
+        return []
+    write_log("Fetching main album tracks for song reviews - %s" % main_album_url)
+    try:
+        with _AllMusicUserAgent():
+            album_page, code = urlopen(main_album_url, False, True)
+            album_page = decode_page(album_page)
+            album_soup = parse_html.SoupWrapper(parse_html.parse(album_page))
+            # Parse tracks from main album page - this will also populate track reviews
+            tracks = parse_tracks(album_soup, {})
+            if not tracks:
+                # Try AJAX track listing
+                ajax_soup = fetch_tracklisting_soup(main_album_url)
+                if ajax_soup is not None:
+                    tracks = parse_tracks(ajax_soup, {})
+            return tracks
+    except Exception as exc:
+        write_log("Failed to fetch main album tracks: %s" % exc)
+        return []
+
+
+def _normalize_title_for_matching(title):
+    """Normalize track title for case-insensitive comparison."""
+    if not title:
+        return ''
+    # Lowercase, strip whitespace, and remove punctuation for matching
+    normalized = title.lower().strip()
+    # Remove common punctuation that might differ between releases
+    for char in '.,!?\'"-()[]':
+        normalized = normalized.replace(char, '')
+    return ' '.join(normalized.split())  # Normalize whitespace
+
+
+def _ensure_track_reviews_from_main_album(tracks, main_album_url):
+    """Copy track reviews from main album to release tracks by matching titles.
+    
+    When viewing a specific release, the release page may not have song reviews
+    even if the main album does. This fetches reviews from the main album and
+    applies them to matching tracks on the release.
+    """
+    if not tracks or not main_album_url:
+        return
+    # Check if any release tracks are missing reviews
+    missing_reviews = [t for t in tracks if 'track_review' not in t]
+    if not missing_reviews:
+        write_log("All release tracks already have reviews; skipping main album fetch.")
+        return
+    
+    main_tracks = _fetch_main_album_tracks_with_reviews(main_album_url)
+    if not main_tracks:
+        return
+    
+    # Build a lookup dict of normalized title -> track_review
+    review_lookup = {}
+    for track in main_tracks:
+        review = track.get('track_review')
+        if not review:
+            continue
+        title = track.get('title') or track.get('track')
+        if not title:
+            continue
+        normalized = _normalize_title_for_matching(title)
+        if normalized:
+            review_lookup[normalized] = review
+    
+    if not review_lookup:
+        write_log("No track reviews found on main album.")
+        return
+    
+    # Apply reviews to release tracks
+    matched = 0
+    for track in tracks:
+        if 'track_review' in track:
+            continue
+        title = track.get('title') or track.get('track')
+        if not title:
+            continue
+        normalized = _normalize_title_for_matching(title)
+        review = review_lookup.get(normalized)
+        if review:
+            track['track_review'] = review
+            matched += 1
+            write_log("Matched track review for '%s' from main album." % title)
+    
+    write_log("Matched %d track reviews from main album." % matched)
+
+
+# Fields to strip from main album tracks when using them for title-based matching
+# (preserves user's existing track/disc numbers)
+_STRIP_FOR_TITLE_MATCH = frozenset(['track', 'discnumber', 'totaltracks', 'totaldiscs'])
+
+
+def _fetch_main_album_tracks_for_title_matching(main_album_url):
+    """Fetch tracks from main album for title-based matching.
+    
+    Used when a release page has no track listing. Returns tracks with
+    track/disc numbers stripped so the user's existing values are preserved.
+    """
+    if not main_album_url:
+        return []
+    write_log("Fetching main album tracks for title-based matching - %s" % main_album_url)
+    main_tracks = _fetch_main_album_tracks_with_reviews(main_album_url)
+    if not main_tracks:
+        write_log("No tracks found on main album.")
+        return []
+    
+    # Strip track/disc numbering fields so user's existing values are preserved
+    for track in main_tracks:
+        for field in _STRIP_FOR_TITLE_MATCH:
+            track.pop(field, None)
+    
+    write_log("Fetched %d tracks from main album for title matching." % len(main_tracks))
+    return main_tracks
+
+
 def _normalize_value_for_compare(value):
     """Normalize a value for comparison (handles lists vs strings)."""
     if isinstance(value, list):
@@ -1227,6 +1344,19 @@ def parse_release_albumpage(page, album_soup, album_url=None):
             ajax_tracks = parse_tracks(ajax_soup, info)
             if ajax_tracks:
                 tracks = ajax_tracks
+    if tracks:
+        # Copy track reviews from main album if release tracks don't have them
+        _ensure_track_reviews_from_main_album(tracks, info.get('#main-album-url'))
+    if not tracks:
+        # No track listing on release - store main album tracks for title-based matching
+        # These are stored in info rather than returned as tracks, so the UI can
+        # do explicit title matching and preserve user's existing track numbers
+        main_album_url = info.get('#main-album-url')
+        if main_album_url:
+            main_tracks = _fetch_main_album_tracks_for_title_matching(main_album_url)
+            if main_tracks:
+                info['#title_match_tracks'] = main_tracks
+                write_log('Stored %d main album tracks for title-based matching.' % len(main_tracks))
     if not tracks:
         write_log('AllMusic: No track listing found for this release; returning album-only metadata.')
         tracks = None
@@ -1643,8 +1773,8 @@ def replace_feat(album_info, track_info):
     artist = None
     for key in ['albumartist', 'artist', 'performer', 'composer']:
         value = album_info.get(key, '').strip()
-        if not value.startswith('feat:'):
-            artist = album_info[key]
+        if value and not value.startswith('feat:'):
+            artist = value
             break
 
     if artist is None:
