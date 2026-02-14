@@ -1003,6 +1003,7 @@ def _ensure_credits(info, album_soup, *album_urls):
                 if link not in existing_urls:
                     existing_urls.append(link)
 
+    credit_pairs = []
     for entry in credits:
         roles = entry['roles'] or []
         primary_value = entry.get('name') or entry.get('entry')
@@ -1012,16 +1013,9 @@ def _ensure_credits(info, album_soup, *album_urls):
             tag = _normalize_role_tag(role)
             if tag is None:
                 continue
-            values = info.get(tag)
-            if not values:
-                info[tag] = [primary_value]
-                continue
-            if isinstance(values, list):
-                if primary_value not in values:
-                    values.append(primary_value)
-            else:
-                if values != primary_value:
-                    info[tag] = [values, primary_value]
+            credit_pairs.append(f"{tag}={primary_value}")
+    if credit_pairs:
+        info['amg_credits'] = '\\\\'.join(credit_pairs)
 
 
 def parse_release_albumpage(page, album_soup, album_url=None):
@@ -1569,6 +1563,7 @@ def retrieve_album(url, coverurl=None, id_field=ALBUM_ID):
         if album_page.find(b"featured new releases") >= 0:
             raise OldURLError("Old AMG URL used.")
 
+        album_page = decode_page(album_page)
         info, tracks = parse_albumpage(album_page, album_url=url)
         resolved_url = info.get('#canonical-url', url)
         info['#albumurl'] = resolved_url
@@ -1685,6 +1680,7 @@ class AllMusic(object):
             raise RetrievalError(str(e))
         write_log('Retrieved search results.')
 
+        searchpage = decode_page(searchpage)
         search_results = parse_searchpage(searchpage, artist, album)
         if search_results:
             matched, matches = search_results
