@@ -576,11 +576,14 @@ def parse_sidebar_element(element):
             values = [convert(anchor.string) for anchor in anchors]
             values = [value for value in values if value and value.lower() not in ('see more', 'see all')]
         if not values:
-            values = []
+            seen = set()
             for div in element.find_all('div'):
                 text = div.string or getattr(div, 'text', None)
                 if text:
-                    values.append(convert(text))
+                    text_converted = convert(text)
+                    if text_converted and text_converted not in seen:
+                        values.append(text_converted)
+                        seen.add(text_converted)
             if not values:
                 div = element.find('div')
                 if div and div.string:
