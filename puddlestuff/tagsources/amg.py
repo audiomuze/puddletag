@@ -300,7 +300,7 @@ def _parse_date_string(date_str):
 
 
 def convert_year(info):
-    """Convert release date to releasedate (full) and date (year only)."""
+    """Convert release date to releasedate (full), date (year only), and year."""
     # Handle old 'release date' key for backwards compatibility
     if 'release date' in info:
         raw_date = info.pop('release date')
@@ -310,6 +310,7 @@ def convert_year(info):
             result['releasedate'] = full_date
         if year_only:
             result['date'] = year_only
+            result['year'] = year_only
         return result
     
     # Handle 'releasedate' if already mapped by spanmap
@@ -323,6 +324,7 @@ def convert_year(info):
             result['releasedate'] = full_date
         if year_only:
             result['date'] = year_only
+            result['year'] = year_only
         return result
     
     return {}
@@ -928,6 +930,7 @@ def _find_existing_key(info, target_lower):
 # Map of fields to their 'original' tag names (when values differ)
 _ORIGINAL_FIELD_NAMES = {
     'releasedate': 'originaldate',
+    'year': 'originalyear',
 }
 
 
@@ -1704,9 +1707,9 @@ def retrieve_album(url, coverurl=None, id_field=ALBUM_ID):
             info['amg_release_url'] = resolved_url
             main_url = info.get('#main-album-url')
             if main_url:
-                info['amg_mainalbum_url'] = main_url
+                info['amg_album_url'] = main_url
         else:
-            info['amg_mainalbum_url'] = resolved_url
+            info['amg_album_url'] = resolved_url
 
         if 'album' in info:
             info['#extrainfo'] = [
