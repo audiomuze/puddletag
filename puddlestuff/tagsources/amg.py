@@ -159,7 +159,7 @@ spanmap = CaselessDict({
     'Style': 'style',
     'Themes': 'theme',
     'Moods': 'mood',
-    'Release Date': 'year',
+    'Release Date': 'releasedate',
     'Recording Date': 'recording_date',
     'Recording Location': 'recordinglocation',
     'Label': 'label',
@@ -272,36 +272,59 @@ def extract_album_id_from_url(url):
     return None
 
 
-def convert_year(info):
-    if 'release date' not in info:
-        return {}
-
-    info['year'] = info['release date']
-    del (info['release date'])
-
-    if not isinstance(info['year'], str):
-        info['year'] = info['year'][0]
-    info['year'] = info['year'].strip()
-
+def _parse_date_string(date_str):
+    """Parse a date string and return (full_date, year_only) tuple."""
+    if not date_str:
+        return None, None
+    date_str = date_str.strip() if isinstance(date_str, str) else date_str[0].strip()
+    
     formats = [
-        ('%B %d, %Y', '%Y-%m-%d'),
-        ('%B %d %Y', '%Y-%m-%d'),
-        ('%b %d, %Y', '%Y-%m-%d'),
-        ('%b %d %Y', '%Y-%m-%d'),
-        ('%B %Y', '%Y-%m'),
-        ('%B, %Y', '%Y-%m'),
-        ('%b %Y', '%Y-%m'),
-        ('%Y', '%Y'),
+        ('%B %d, %Y', '%Y-%m-%d', '%Y'),
+        ('%B %d %Y', '%Y-%m-%d', '%Y'),
+        ('%b %d, %Y', '%Y-%m-%d', '%Y'),
+        ('%b %d %Y', '%Y-%m-%d', '%Y'),
+        ('%B %Y', '%Y-%m', '%Y'),
+        ('%B, %Y', '%Y-%m', '%Y'),
+        ('%b %Y', '%Y-%m', '%Y'),
+        ('%Y', '%Y', '%Y'),
     ]
-
-    for fmt, output_fmt in formats:
+    
+    for fmt, full_fmt, year_fmt in formats:
         try:
-            year = time.strptime(info['year'], fmt)
-            return {'year': time.strftime(output_fmt, year)}
+            parsed = time.strptime(date_str, fmt)
+            return time.strftime(full_fmt, parsed), time.strftime(year_fmt, parsed)
         except ValueError:
             continue
+    return date_str, None
 
-    return {'year': info['year']}
+
+def convert_year(info):
+    """Convert release date to releasedate (full) and date (year only)."""
+    # Handle old 'release date' key for backwards compatibility
+    if 'release date' in info:
+        raw_date = info.pop('release date')
+        full_date, year_only = _parse_date_string(raw_date)
+        result = {}
+        if full_date:
+            result['releasedate'] = full_date
+        if year_only:
+            result['date'] = year_only
+        return result
+    
+    # Handle 'releasedate' if already mapped by spanmap
+    if 'releasedate' in info:
+        raw_date = info.get('releasedate')
+        if isinstance(raw_date, list):
+            raw_date = raw_date[0] if raw_date else None
+        full_date, year_only = _parse_date_string(raw_date)
+        result = {}
+        if full_date:
+            result['releasedate'] = full_date
+        if year_only:
+            result['date'] = year_only
+        return result
+    
+    return {}
 
 
 def create_search(terms):
@@ -865,6 +888,7 @@ def _fetch_main_album_info(main_album_url):
             album_page = decode_page(album_page)
             album_soup = parse_html.SoupWrapper(parse_html.parse(album_page))
             info = parse_basic_info_meta(album_soup)
+            info.update(convert_year(info))
             info.update(parse_rating(album_soup))
             # Also capture the album title from the main album page
             title = album_soup.find('h1', {'id': 'albumTitle'})
@@ -877,7 +901,7 @@ def _fetch_main_album_info(main_album_url):
 
 
 # Fields to skip when saving 'original' versions from main album
-_SKIP_ORIGINAL_FIELDS = frozenset(['duration', '__length', '#cover-url', '#canonical-url'])
+_SKIP_ORIGINAL_FIELDS = frozenset(['duration', '__length', '#cover-url', '#canonical-url', 'date'])
 
 
 def _normalize_value_for_compare(value):
@@ -895,6 +919,12 @@ def _find_existing_key(info, target_lower):
         if key.lower() == target_lower:
             return key
     return None
+
+
+# Map of fields to their 'original' tag names (when values differ)
+_ORIGINAL_FIELD_NAMES = {
+    'releasedate': 'originaldate',
+}
 
 
 def _ensure_basic_info(info, main_album_url):
@@ -922,7 +952,7 @@ def _ensure_basic_info(info, main_album_url):
             existing_value = info.get(actual_key) if actual_key else None
             # Compare normalized values
             if _normalize_value_for_compare(existing_value) != _normalize_value_for_compare(value):
-                original_field = 'original' + field_lower
+                original_field = _ORIGINAL_FIELD_NAMES.get(field_lower, 'original' + field_lower)
                 info[original_field] = value
                 write_log("Saved main album '%s' as '%s'." % (field, original_field))
         else:
@@ -1130,8 +1160,7 @@ def parse_release_albumpage(page, album_soup, album_url=None):
     main_album_section = album_soup.find('div', {'id': 'mainAlbum'})
     if main_album_section is not None:
         anchor = main_album_section.find('a')
-        if anchor is not None and anchor.string:
-            info.setdefault('main_album', convert(anchor.string))
+        if anchor is not None:
             href = anchor.element.attrib.get('href')
             if href:
                 info['#main-album-url'] = iri_to_uri(href)
