@@ -73,12 +73,12 @@ The scripting functions that puddletag supports are listed here. Use them where 
 
 .. describe:: $identical(tagname)
 
-   Returns ``1`` when every selected file shares the same value for *tagname* and ``0`` otherwise. The argument accepts bare tag names such as ``albumartist`` or field references like ``%albumartist%``. If any selected row is missing the tag or contains a different value, the function returns ``0``.
+   Returns ``1`` when every currently selected file shares the same value for *tagname* and ``0`` otherwise. The argument accepts bare tag names such as ``albumartist`` or field references like ``%albumartist%``. puddletag evaluates the active selection from the tag grid, so multi-directory selections are honored and missing tag values count as mismatches.
 
    Manual verification (Album Artist example):
 
-   #. Select all tracks from one album where ``Album Artist`` matches, run :menuselection:`Actions --> Format value` with a temporary field set to ``$identical(%albumartist%)``, and confirm the preview shows ``1``.
-   #. Add another directory whose ``Album Artist`` differs (or is blank), rerun the action, and confirm the result flips to ``0``.
+   #. Select all tracks from a single album where ``Album Artist`` is identical, run :menuselection:`Actions --> Format value` with a temporary field set to ``$identical(%albumartist%)``, and confirm the preview shows ``1``.
+   #. Extend the selection with another directory whose ``Album Artist`` differs or is blank, rerun the action, and confirm the result flips to ``0``.
 
 .. describe:: $alleq(tagname, value)
 

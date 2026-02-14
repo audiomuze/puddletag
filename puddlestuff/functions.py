@@ -151,6 +151,31 @@ def alleq(p_tagname=None, value=None, state=None):
         if current is None:
             return false
         if to_string(current) != expected:
+=======
+    if not selected:
+        return false
+    tagname = to_string(p_tagname)
+    if tagname.startswith('%') and tagname.endswith('%') and len(tagname) > 2:
+        tagname = tagname[1:-1]
+    values = []
+    missing_value = False
+    for tags in selected:
+        try:
+            value = tags.get(tagname, None)
+        except AttributeError:
+            value = getattr(tags, tagname, None)
+        if value is None:
+            missing_value = True
+            continue
+        values.append(value)
+    if not values:
+        return false
+    if missing_value:
+        return false
+    first = values[0]
+    for v in values[1:]:
+        if v != first:
+>>>>>>> fork/context-awareness
             return false
     return true
 
@@ -194,82 +219,6 @@ def caps(text):
     # converts the rest to lower case.
     return titleCase(text)
 
-
-def caps2(text):
-    # Capitalizes the first letter of each word in string and
-    # leaves all other characters unchanged.
-    upcase = set(i for i, char in enumerate(text) if char.upper() == char)
-    return "".join(ch.upper() if i in upcase else ch
-                   for i, ch in enumerate(text.title()))
-
-
-def caps3(text):
-    # Capitalizes the first letter of the string and converts
-    # the rest to lower case.
-    try:
-        start = re.search(r"\w", text, re.U).start(0)
-    except AttributeError:
-        return
-    return text[:start] + text[start].upper() + text[start + 1:].lower()
-
-
-def ceiling(n_value):
-    return math.ceil(n_value)
-
-
-def char(text):
-    try:
-        return str(ord(text))
-    except TypeError:
-        return
-
-
-def changeartist(artist, *files):
-    for audio in files:
-        audio['artist'] = artist
-        audio.save()
-
-
-def div(n_numerator, n_divisor):
-    if n_divisor == 0:
-        raise FuncError("Cannot divide by zero.")
-    try:
-        return str((D(n_numerator) / D(n_divisor)).normalize())
-    except decimal.InvalidOperation:
-        return
-    # ret = unicode(float(n_numerator) / n_divisor)
-    # if len(ret) < len(normalized):
-    # return ret
-    # else:
-    # return normalized
-
-
-def eql(text, text1):
-    return true if text == text1 else false
-
-
-# Contributed by Stjujsckij Nickolaj
-def enconvert(text, enc_name):
-    ''' Convert from non-standard encoding, "Convert to encoding: $0, Encoding: $1"
-&Encoding, combo, cp1250, cp1251, cp1252, cp1253, cp1254, cp1255, cp1256, cp1257, cp1258,\
-euc_jp, cp932, euc_jis_2004, shift_jis, johab, big5, big5hkscs, gb2312, gb18030, gbk, hz'''
-    return text.encode("latin1", 'replace').decode(enc_name, 'replace')
-
-
-def filenametotag(m_tags, p_pattern):
-    """Filename to Tag, File->Tag '$1'
-&Pattern, text"""
-    return findfunc.filenametotag(p_pattern, m_tags[PATH], True)
-
-
-def finddups(tracks, key='title', method=None):
-    from .puddleobjects import dupes
-    li = []
-    for z in tracks:
-        try:
-            li.append(z[key])
-        except KeyError:
-            li.append(None)
     return dupes(li, method)
 
 
@@ -1130,6 +1079,7 @@ def validate(text, to=None, chars=None):
 
 
 functions = {
+        "identical": identical,
     "add": add,
     "and": and_,
     'artwork': load_images,

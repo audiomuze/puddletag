@@ -30,6 +30,7 @@ from .constants import SELECTIONCHANGED, SEPARATOR, BLANK
 from . import confirmations
 import logging
 from .translations import translate
+from . import context
 from .util import rename_error_msg
 from .audio_filter import parse as filter_audio
 
@@ -2256,6 +2257,8 @@ class TagTable(QTableView):
                 self.filesselected.emit(False)
             model.highlight(self.selectedRows)
             self.tagselectionchanged.emit()
+        # keep global context aware of current selection for scripting
+        context.set_selected_files(self.selectedTags)
 
     def saveBeforeReset(self):
         self.setCursor(Qt.CursorShape.BusyCursor)

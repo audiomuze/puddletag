@@ -1,4 +1,5 @@
 """Shared selection context helpers for scripting functions."""
+
 from typing import Iterable, List, Optional
 
 _selected_files: List = []
