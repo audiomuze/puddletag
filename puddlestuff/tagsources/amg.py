@@ -876,26 +876,55 @@ def _fetch_main_album_info(main_album_url):
 _MAIN_ALBUM_FIELDS = frozenset(['genre', 'styles', 'style'])
 
 
+def _normalize_value_for_compare(value):
+    """Normalize a value for comparison (handles lists vs strings)."""
+    if isinstance(value, list):
+        return tuple(sorted(str(v).strip().lower() for v in value if v))
+    if value is None:
+        return ()
+    return (str(value).strip().lower(),)
+
+
+def _find_existing_key(info, target_lower):
+    """Find the actual key in info dict matching target (case-insensitive)."""
+    for key in info:
+        if key.lower() == target_lower:
+            return key
+    return None
+
+
 def _ensure_basic_info(info, main_album_url):
-    """Ensure basic info fields are present, fetching from main album if needed."""
+    """Ensure basic info fields are present, fetching from main album if needed.
+    
+    - Fields missing from release are filled in from main album
+    - Fields present in both are kept from release, with main album's version
+      saved as 'original_<field>' only if the values differ
+    """
     if not main_album_url:
-        return
-    # Check if we're missing key fields that the main album would have
-    existing_keys = {k.lower() for k in info.keys()}
-    missing = _MAIN_ALBUM_FIELDS - existing_keys
-    if not missing:
         return
     main_info = _fetch_main_album_info(main_album_url)
     if not main_info:
         return
+    existing_keys = {k.lower() for k in info.keys()}
     for field, value in main_info.items():
-        field_lower = field.lower()
-        if field_lower in existing_keys:
-            continue
         if isempty(value):
             continue
-        info[field] = value
-        write_log("Filled in '%s' from main album page." % field)
+        field_lower = field.lower()
+        if field_lower in existing_keys:
+            # Release has this field - check if values differ
+            actual_key = _find_existing_key(info, field_lower)
+            existing_value = info.get(actual_key) if actual_key else None
+            # Compare normalized values
+            if _normalize_value_for_compare(existing_value) != _normalize_value_for_compare(value):
+                original_field = 'original_' + field_lower
+                info[original_field] = value
+                write_log("Saved main album '%s' as '%s'." % (field, original_field))
+        else:
+            # Release doesn't have this field - fill it in
+            info[field] = value
+            existing_keys.add(field_lower)
+            write_log("Filled in '%s' from main album page." % field)
+            write_log("Filled in '%s' from main album page." % field)
 
 
 def _collect_mood_theme_values(container, node_id):
