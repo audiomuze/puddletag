@@ -331,9 +331,19 @@ def parse_cover(soup):
     return {'#cover-url': cover_url}
 
 
-def parse_rating(dd):
-    dd.find('span', {'class': "hidden", 'itemprop': "rating"})
-    return convert(dd.string)
+def parse_rating(album_soup):
+    """Extract AllMusic rating from 'ratingAllmusicN' class pattern."""
+    rating_div = album_soup.find('div', {'class': re.compile(r'allmusicRating')})
+    if rating_div is None:
+        return {}
+    class_attr = rating_div.element.attrib.get('class', '')
+    match = re.search(r'ratingAllmusic(\d+)', class_attr)
+    if match:
+        rating = match.group(1)
+        if rating == '0':
+            return {}
+        return {'amg_rating': rating}
+    return {}
 
 
 def parse_review(content):
@@ -844,6 +854,50 @@ def fetch_moods_themes_soup(album_url):
     return _fetch_tab_soup(album_url, 'moodsThemesAjax', 'moods/themes')
 
 
+def _fetch_main_album_info(main_album_url):
+    """Fetch and parse the main album page to extract basic info fields."""
+    if not main_album_url:
+        return {}
+    write_log("Fetching main album page for missing fields - %s" % main_album_url)
+    try:
+        with _AllMusicUserAgent():
+            album_page, code = urlopen(main_album_url, False, True)
+            album_page = decode_page(album_page)
+            album_soup = parse_html.SoupWrapper(parse_html.parse(album_page))
+            info = parse_basic_info_meta(album_soup)
+            info.update(parse_rating(album_soup))
+            return info
+    except Exception as exc:
+        write_log("Failed to fetch main album page: %s" % exc)
+        return {}
+
+
+# Fields that are often missing on release pages but present on main album pages
+_MAIN_ALBUM_FIELDS = frozenset(['genre', 'styles', 'style'])
+
+
+def _ensure_basic_info(info, main_album_url):
+    """Ensure basic info fields are present, fetching from main album if needed."""
+    if not main_album_url:
+        return
+    # Check if we're missing key fields that the main album would have
+    existing_keys = {k.lower() for k in info.keys()}
+    missing = _MAIN_ALBUM_FIELDS - existing_keys
+    if not missing:
+        return
+    main_info = _fetch_main_album_info(main_album_url)
+    if not main_info:
+        return
+    for field, value in main_info.items():
+        field_lower = field.lower()
+        if field_lower in existing_keys:
+            continue
+        if isempty(value):
+            continue
+        info[field] = value
+        write_log("Filled in '%s' from main album page." % field)
+
+
 def _collect_mood_theme_values(container, node_id):
     if container is None:
         return []
@@ -1058,6 +1112,8 @@ def parse_release_albumpage(page, album_soup, album_url=None):
     if cover_info:
         info.update(cover_info)
 
+    info.update(parse_rating(album_soup))
+
     canonical = extract_canonical_url(album_soup)
     if canonical:
         info['#canonical-url'] = canonical
@@ -1065,6 +1121,7 @@ def parse_release_albumpage(page, album_soup, album_url=None):
     fallback_urls = [info.get('#canonical-url') or album_url,
                      info.get('#main-album-url')]
 
+    _ensure_basic_info(info, info.get('#main-album-url'))
     _ensure_moods_themes(info, album_soup, *fallback_urls)
     _ensure_credits(info, album_soup, *fallback_urls)
 
@@ -1128,6 +1185,8 @@ def parse_modern_albumpage(page, album_soup, artist=None, album=None, album_url=
     cover_info = parse_modern_cover(album_soup, page)
     if cover_info:
         info.update(cover_info)
+
+    info.update(parse_rating(album_soup))
 
     canonical = extract_canonical_url(album_soup)
     if canonical:
