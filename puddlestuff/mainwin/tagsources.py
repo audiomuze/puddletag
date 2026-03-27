@@ -22,7 +22,7 @@ from ..tagsources import (tagsources, status_obj, set_useragent,
 from ..util import (isempty, pprint_tag,
                    split_by_field, to_string, translate)
 
-from .releasewidget import ReleaseWidget
+from .releasewidget import ReleaseWidget, default_trackpattern
 
 pyqtRemoveInputHook()
 
@@ -484,7 +484,7 @@ class SettingsDialog(QWidget):
         cparser = PuddleConfig(os.path.join(CONFIGDIR, 'tagsources.conf'))
 
         trackpattern = cparser.get('tagsources', 'trackpattern',
-                                   '%track% - %title%')
+                       default_trackpattern)
 
         self._text.setText(trackpattern)
 
@@ -815,7 +815,7 @@ class MainWin(QWidget):
             index = 0
         self.sourcelist.setCurrentIndex(index)
         self.__fieldsEdit.setTags(self.__sourceFields[index])
-        df = get('trackpattern', '%track% - %title%')
+        df = get('trackpattern', default_trackpattern)
         self.listbox.trackPattern = df
 
         albumformat = get('albumpattern',

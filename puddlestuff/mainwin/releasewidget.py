@@ -22,6 +22,7 @@ RETRIEVED_ALBUMS = translate("Tag Sources", "Retrieved Albums (sorted by {})")
 
 default_albumpattern = '%artist% - %album% $if(%__numtracks%, ' \
                        '[%__numtracks%], "")'
+default_trackpattern = '$if(%discnumber%, Disc %discnumber% - , "")%track% - %title%'
 
 no_disp_fields = ['__numtracks', '__image']
 
@@ -327,7 +328,7 @@ class TreeModel(QtCore.QAbstractItemModel):
     exactMatches = pyqtSignal(list, name='exactMatches')
 
     def __init__(self, data=None, album_pattern=None,
-                 track_pattern='%track% - %title%', tagsource=None, parent=None):
+                 track_pattern=default_trackpattern, tagsource=None, parent=None):
         QtCore.QAbstractItemModel.__init__(self, parent)
 
         self.mapping = {}
