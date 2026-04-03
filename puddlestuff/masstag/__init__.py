@@ -125,7 +125,7 @@ def brute_force_results(audios, retrieved):
 def check_result(result, audios):
     track_nums = [_f for _f in [to_string(audio.get('track', None)) for audio in audios] if _f]
 
-    if result.tracks is None:
+    if result.tracks is None or len(result.tracks) == 0:
         return True
 
     if track_nums:
@@ -377,9 +377,15 @@ def merge_tsp_tracks(profiles, files=None):
         if not tsp.matched:
             continue
 
-        if tsp.result.tracks is None and files is not None:
+        target_files = files if files is not None else tsp.files
+
+        if (tsp.result.tracks is None or len(tsp.result.tracks) == 0) and target_files is not None:
             info = strip_fields(tsp.result.info, tsp.fields, leave_exact=True)
-            tags = [deepcopy(info) for z in files]
+            tags = []
+            for f in target_files:
+                t = deepcopy(info)
+                t['#exact'] = f
+                tags.append(t)
         else:
             tags = [strip_fields(t, tsp.fields, leave_exact=True)
                     for t in tsp.result.merged]
