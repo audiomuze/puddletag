@@ -7,7 +7,7 @@ from copy import deepcopy
 
 from PyQt6.QtCore import Qt, pyqtRemoveInputHook, pyqtSignal
 from PyQt6.QtWidgets import QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QGroupBox, QHBoxLayout, \
-    QInputDialog, QLabel, QLineEdit, QPushButton, QSpinBox, QTextEdit, QToolButton, QVBoxLayout, \
+    QInputDialog, QLabel, QLineEdit, QPushButton, QSlider, QSpinBox, QTextEdit, QToolButton, QVBoxLayout, \
     QWidget
 
 from .. import audioinfo, version_string
@@ -49,6 +49,66 @@ FIELDLIST_TIP = translate("Tag Sources",
                           'composer and __image fields.')
 
 DEFAULT_REGEXP = {'album': [r'(.*?)([\(\[\{].*[\)\]\}])', '$1']}
+
+
+class FuzzyBoundControl(QWidget):
+    valueChanged = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.__minus = QToolButton()
+        self.__minus.setText('-')
+
+        self.__slider = QSlider(Qt.Orientation.Horizontal)
+        self.__slider.setRange(0, 100)
+        self.__slider.setValue(90)
+        self.__slider.setSingleStep(1)
+        self.__slider.setPageStep(5)
+
+        self.__plus = QToolButton()
+        self.__plus.setText('+')
+
+        self.__valueLabel = QLabel('90%')
+        self.__valueLabel.setMinimumWidth(40)
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(self.__minus)
+        layout.addWidget(self.__slider, 1)
+        layout.addWidget(self.__plus)
+        layout.addWidget(self.__valueLabel)
+        self.setLayout(layout)
+
+        self.__minus.clicked.connect(self.__decrement)
+        self.__plus.clicked.connect(self.__increment)
+        self.__slider.valueChanged.connect(self.__on_value_changed)
+
+    def value(self):
+        return int(self.__slider.value())
+
+    def setValue(self, value):
+        self.__slider.setValue(int(value))
+
+    def setEnabled(self, enabled):
+        enabled = bool(enabled)
+        super().setEnabled(enabled)
+        self.__minus.setEnabled(enabled)
+        self.__plus.setEnabled(enabled)
+        self.__slider.setEnabled(enabled)
+        self.__valueLabel.setEnabled(enabled)
+
+    def __increment(self):
+        self.__slider.setValue(min(self.__slider.maximum(), self.__slider.value() + 1))
+
+    def __decrement(self):
+        self.__slider.setValue(max(self.__slider.minimum(), self.__slider.value() - 1))
+
+    def __on_value_changed(self, value):
+        value = int(value)
+        self.__valueLabel.setText(f'{value}%')
+        self.valueChanged.emit(value)
 
 
 def apply_regexps(audio, regexps=None):
@@ -677,10 +737,7 @@ class MainWin(QWidget):
         # Optional fuzzy matching mode for track assignment.
         self.__fuzzyMatch = QCheckBox(translate("Tag Sources",
                             'Fuzzy match titles.'))
-        self.__fuzzyBound = QSpinBox()
-        self.__fuzzyBound.setRange(0, 100)
-        self.__fuzzyBound.setValue(90)
-        self.__fuzzyBound.setSuffix('%')
+        self.__fuzzyBound = FuzzyBoundControl()
         self.__fuzzyBound.setEnabled(False)
 
         # The Second fields option (Automatically retrieve matches)
