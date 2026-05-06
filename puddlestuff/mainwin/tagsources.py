@@ -674,6 +674,15 @@ class MainWin(QWidget):
         self.__updateEmpty = QCheckBox(translate("Tag Sources",
                                                  'Update empty fields only.'))
 
+        # Optional fuzzy matching mode for track assignment.
+        self.__fuzzyMatch = QCheckBox(translate("Tag Sources",
+                            'Fuzzy match titles.'))
+        self.__fuzzyBound = QSpinBox()
+        self.__fuzzyBound.setRange(0, 100)
+        self.__fuzzyBound.setValue(90)
+        self.__fuzzyBound.setSuffix('%')
+        self.__fuzzyBound.setEnabled(False)
+
         # The Second fields option (Automatically retrieve matches)
         # If checked, the album that best matches the retrieved albums will be automatically retrieved.
         # Uses configured preferences to automate thinsg:
@@ -708,7 +717,13 @@ class MainWin(QWidget):
         vbox.addWidget(self.listbox, 1)
         vbox.addLayout(responsebox)
         vbox.addWidget(self.__fieldsEdit)
-        vbox.addWidget(self.__updateEmpty)
+
+        optionsbox = QHBoxLayout()
+        optionsbox.addWidget(self.__updateEmpty)
+        optionsbox.addWidget(self.__fuzzyMatch)
+        optionsbox.addWidget(self.__fuzzyBound)
+        optionsbox.addStretch()
+        vbox.addLayout(optionsbox)
         vbox.addWidget(self.__autoRetrieve)
 
         self.setLayout(vbox)
@@ -716,7 +731,34 @@ class MainWin(QWidget):
         connect(status_obj, 'statusChanged', self.label.setText)
         connect(status_obj, 'logappend', self.logappend)
 
+        self.__fuzzyMatch.toggled.connect(self._toggleFuzzyMatch)
+        self.__fuzzyBound.valueChanged.connect(self._changeFuzzyBound)
+
         self.changeSource(0)
+
+    def _clear_selected_files_preview(self):
+        rows = self._status['selectedrows']
+        if rows:
+            self.enable_preview_mode.emit()
+            self.setpreview.emit([{} for _ in rows])
+
+    def _toggleFuzzyMatch(self, enabled):
+        enabled = bool(enabled)
+        self.__fuzzyBound.setEnabled(enabled)
+        self.listbox.fuzzyMatch = enabled
+        self.listbox.fuzzyBound = int(self.__fuzzyBound.value())
+        self.listbox.resetFuzzyCache()
+        if enabled:
+            # OFF -> ON: perform fuzzy matching.
+            self.listbox.selectionChanged()
+        else:
+            # ON -> OFF: clear selected files.
+            self._clear_selected_files_preview()
+
+    def _changeFuzzyBound(self, value):
+        self.listbox.fuzzyBound = int(value)
+        if self.__fuzzyMatch.isChecked():
+            self.listbox.selectionChanged()
 
     def _applyPrefs(self, prefs):
         self.curSource.applyPrefs(prefs)
@@ -840,6 +882,26 @@ class MainWin(QWidget):
         checkstate = get('existing', False)
         self.__updateEmpty.setChecked(checkstate)
 
+        # Fuzzy matching settings.
+        fuzzystate = bool(get('fuzzy_match', False))
+        fuzzybound = get('fuzzy_bound', 90, True)
+        try:
+            fuzzybound = int(fuzzybound)
+        except (TypeError, ValueError):
+            fuzzybound = 90
+
+        self.__fuzzyMatch.blockSignals(True)
+        self.__fuzzyBound.blockSignals(True)
+        self.__fuzzyBound.setValue(fuzzybound)
+        self.__fuzzyMatch.setChecked(fuzzystate)
+        self.__fuzzyBound.setEnabled(fuzzystate)
+        self.__fuzzyMatch.blockSignals(False)
+        self.__fuzzyBound.blockSignals(False)
+
+        self.listbox.fuzzyMatch = fuzzystate
+        self.listbox.fuzzyBound = fuzzybound
+        self.listbox.resetFuzzyCache()
+
         checkstate = get('autoretrieve', False)
         self.__autoRetrieve.setChecked(checkstate)
 
@@ -935,6 +997,8 @@ class MainWin(QWidget):
             settings.set('tagsourcetags', ts.name, self.__sourceFields[i])
         settings.set('tagsources', 'lastsort', self.listbox.lastSortIndex)
         settings.set('tagsources', 'existing', self.__updateEmpty.isChecked())
+        settings.set('tagsources', 'fuzzy_match', self.__fuzzyMatch.isChecked())
+        settings.set('tagsources', 'fuzzy_bound', self.__fuzzyBound.value())
         settings.set('tagsources', 'autoretrieve',
                      self.__autoRetrieve.isChecked())
 

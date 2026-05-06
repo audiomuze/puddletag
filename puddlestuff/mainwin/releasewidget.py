@@ -1,3 +1,4 @@
+import re
 import sys
 import traceback
 from copy import deepcopy
@@ -14,6 +15,8 @@ from ..puddleobjects import (PuddleThread,
 from ..tagsources import RetrievalError
 from ..translations import translate
 from ..util import pprint_tag, to_string
+
+from rapidfuzz import fuzz
 
 CHECKEDFLAG = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsUserCheckable
 NORMALFLAG = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
@@ -40,6 +43,166 @@ def _normalize_title_for_match(title):
     for char in '.,!?\'"-()[]':
         normalized = normalized.replace(char, '')
     return ' '.join(normalized.split())
+
+
+def _title_to_text(value):
+    if not value:
+        return ''
+    if isinstance(value, list):
+        value = value[0] if value else ''
+    return to_string(value)
+
+
+def _split_title_subtitle(title_text):
+    """Split a title into base title and trailing bracketed subtitle.
+
+    Conservative: only trailing bracket groups are treated as subtitle.
+    """
+    title_text = (title_text or '').strip()
+    if not title_text:
+        return '', ''
+
+    subtitle_parts = []
+    pattern = re.compile(r'\s*[\(\[\{]([^\)\]\}]+)[\)\]\}]\s*$')
+    base = title_text
+    while True:
+        m = pattern.search(base)
+        if not m:
+            break
+        subtitle_parts.insert(0, m.group(1).strip())
+        base = base[:m.start()].rstrip()
+
+    subtitle = '; '.join([p for p in subtitle_parts if p])
+    return base.strip(), subtitle.strip()
+
+
+def _normalize_title_base_for_fuzzy(title_text):
+    base, _subtitle = _split_title_subtitle(title_text)
+    normalized = (base or '').lower().strip()
+    normalized = normalized.replace('’', "'").replace('‘', "'").replace('´', "'")
+    normalized = normalized.replace('&', ' and ')
+    # Strip trailing featuring info.
+    normalized = re.sub(r"\s+\b(feat|featuring|ft)\b\.?\s+.+$", "", normalized).strip()
+    for char in '.,!?\'"-()[]{}':
+        normalized = normalized.replace(char, ' ')
+    return ' '.join(normalized.split())
+
+
+def _normalize_subtitle_for_fuzzy(subtitle_text):
+    normalized = (subtitle_text or '').lower().strip()
+    normalized = normalized.replace('’', "'").replace('‘', "'").replace('´', "'")
+    normalized = re.sub(r"\s+\b(feat|featuring|ft)\b\.?\s+.+$", "", normalized).strip()
+    for char in '.,!?\'"-()[]{}':
+        normalized = normalized.replace(char, ' ')
+    return ' '.join(normalized.split())
+
+
+def _album_only_tags(album_info):
+    merged = {}
+    for key, val in album_info.items():
+        if not key.startswith('#') and key not in no_disp_fields:
+            merged[key] = val
+    return merged
+
+
+def _prepare_retrieved_tracks_for_fuzzy(retrieved_tracks):
+    processed = []
+    for t in (retrieved_tracks or []):
+        title_text = _title_to_text(t.get('title') or t.get('track'))
+        base, subtitle = _split_title_subtitle(title_text)
+        processed.append({
+            'raw': t,
+            'base': base,
+            'subtitle': subtitle,
+            'base_norm': _normalize_title_base_for_fuzzy(title_text),
+            'subtitle_norm': _normalize_subtitle_for_fuzzy(subtitle),
+        })
+    return processed
+
+
+def _real_get(tags, key, default=''):
+    """Get a tag value ignoring preview-mode overlays when possible."""
+    if tags is None:
+        return default
+    if hasattr(tags, 'realvalue'):
+        try:
+            return tags.realvalue(key, default)
+        except Exception:
+            return default
+    try:
+        return tags.get(key, default)
+    except Exception:
+        return default
+
+
+def _fuzzy_match_one_file(file_tags, processed_tracks, album_info, min_confidence):
+    """Return (tags, score) for one file using title-only fuzzy matching."""
+    merged = _album_only_tags(album_info)
+
+    # Always match against the file's real/original title, not the previewed title.
+    file_title_text = _title_to_text(_real_get(file_tags, 'title', ''))
+    _file_base, file_subtitle = _split_title_subtitle(file_title_text)
+    file_base_norm = _normalize_title_base_for_fuzzy(file_title_text)
+    file_sub_norm = _normalize_subtitle_for_fuzzy(file_subtitle)
+
+    if not file_base_norm:
+        return merged, None
+
+    candidates = []
+    for pt in processed_tracks:
+        if not pt['base_norm']:
+            continue
+        score = fuzz.token_sort_ratio(file_base_norm, pt['base_norm'])
+        if score >= min_confidence:
+            candidates.append((score, pt))
+
+    if not candidates:
+        return merged, None
+
+    # Choose a candidate.
+    chosen_score = None
+    chosen = None
+
+    if not file_sub_norm:
+        # Prefer match without subtitle when file has none.
+        no_sub = [(s, pt) for (s, pt) in candidates if not pt['subtitle_norm']]
+        pool = no_sub if no_sub else candidates
+        chosen_score, chosen = max(pool, key=lambda x: x[0])
+    else:
+        # Prefer best title score; break ties with subtitle similarity.
+        best_score = max(s for s, _pt in candidates)
+        best = [(s, pt) for (s, pt) in candidates if s == best_score]
+        if len(best) == 1:
+            chosen_score, chosen = best[0]
+        else:
+            def tie_key(item):
+                _s, pt = item
+                if not pt['subtitle_norm']:
+                    return 0
+                return fuzz.token_sort_ratio(file_sub_norm, pt['subtitle_norm'])
+            chosen_score, chosen = max(best, key=tie_key)
+
+    raw_track = chosen['raw']
+    for key, val in raw_track.items():
+        if key.startswith('#'):
+            continue
+        # Preserve file's existing track/disc numbers.
+        if key in ('track', 'discnumber', 'totaltracks', 'totaldiscs'):
+            continue
+        merged[key] = val
+
+    # Always write base title.
+    if chosen.get('base'):
+        merged['title'] = chosen['base']
+
+    # Subtitle only when unambiguous.
+    if chosen.get('subtitle'):
+        best_score = max(s for s, _pt in candidates)
+        best_count = sum(1 for s, _pt in candidates if s == best_score)
+        if chosen_score == best_score and best_count == 1:
+            merged['subtitle'] = chosen['subtitle']
+
+    return merged, chosen_score
 
 
 def _match_tracks_by_title(files, title_match_tracks, album_info, tags_to_write, mapping):
@@ -630,11 +793,86 @@ class ReleaseWidget(QTreeView):
         self.jfdi = True
         self.matchFields = ['artist', 'title']
 
+        self.fuzzyMatch = False
+        self.fuzzyBound = 90
+        self._fuzzyCacheKey = None
+        self._fuzzyCache = {}
+        self._fuzzyPrevThreshold = None
+
         header = Header(self)
         header.sortChanged.connect(self.sort)
         self.setHeader(header)
         model = TreeModel()
         self.setModel(model)
+
+    def resetFuzzyCache(self):
+        self._fuzzyCacheKey = None
+        self._fuzzyCache = {}
+        self._fuzzyPrevThreshold = None
+
+    def _fuzzy_album_key(self, album_item):
+        info = getattr(album_item, 'itemData', {}) or {}
+        extrainfo = info.get('#extrainfo')
+        if isinstance(extrainfo, (list, tuple)) and len(extrainfo) == 2:
+            return to_string(extrainfo[1])
+        for k in ('amg_url', 'url', 'album_url'):
+            if info.get(k):
+                return to_string(info.get(k))
+        return to_string(info.get('artist', '')) + '|' + to_string(info.get('album', ''))
+
+    def _fuzzy_file_key(self, file_obj):
+        if hasattr(file_obj, 'filepath') and getattr(file_obj, 'filepath'):
+            return to_string(getattr(file_obj, 'filepath'))
+        tags = getattr(file_obj, 'tags', None)
+        if isinstance(tags, dict):
+            for k in ('__path', '__filename'):
+                if tags.get(k):
+                    return to_string(tags.get(k))
+        return str(id(file_obj))
+
+    def _fuzzy_previews_for_album(self, album_item):
+        selected_files = self._status['selectedfiles']
+        file_keys = [self._fuzzy_file_key(f) for f in selected_files]
+        cache_key = (self._fuzzy_album_key(album_item), tuple(file_keys))
+        if cache_key != self._fuzzyCacheKey:
+            self.resetFuzzyCache()
+            self._fuzzyCacheKey = cache_key
+
+        processed_tracks = _prepare_retrieved_tracks_for_fuzzy(
+            [c.itemData for c in album_item.childItems])
+
+        current_threshold = int(self.fuzzyBound)
+        prev_threshold = self._fuzzyPrevThreshold
+
+        previews = []
+        new_cache = {}
+        for f in selected_files:
+            f_key = self._fuzzy_file_key(f)
+            cached = self._fuzzyCache.get(f_key)
+
+            locked = False
+            if cached and prev_threshold is not None:
+                cached_score = cached.get('score')
+                if current_threshold < prev_threshold:
+                    locked = (cached_score is not None and cached_score >= prev_threshold)
+                elif current_threshold > prev_threshold:
+                    locked = (cached_score is not None and cached_score >= current_threshold)
+                else:
+                    locked = True
+
+            if locked and cached:
+                tags = cached.get('tags', {})
+                score = cached.get('score')
+            else:
+                tags, score = _fuzzy_match_one_file(
+                    f, processed_tracks, album_item.itemData, current_threshold)
+
+            previews.append(tags)
+            new_cache[f_key] = {'tags': tags, 'score': score}
+
+        self._fuzzyCache = new_cache
+        self._fuzzyPrevThreshold = current_threshold
+        return previews
 
     @property
     def albumPattern(self):
@@ -662,6 +900,7 @@ class ReleaseWidget(QTreeView):
     def tagSource(self, source):
         self._tagSource = source
         self.model().tagsource = source
+        self.resetFuzzyCache()
 
     def cleanTrack(self, track):
         return strip(track, self.tagsToWrite, mapping=self.mapping)
@@ -748,12 +987,16 @@ class ReleaseWidget(QTreeView):
             albums = []
             [singles.append(item) if isTrack(item) else
              albums.append(item) for item in items]
-            tracks = []
-            for item in singles:
-                if not item.parentItem in albums:
-                    tracks.append(item.track())
-            [tracks.extend(item.tracks()) for item in albums
-             if item.hasTracks]
+            if self.fuzzyMatch and len(albums) == 1 and albums[0].hasTracks:
+                # Fuzzy match is opt-in; ignore selected track rows.
+                tracks = self._fuzzy_previews_for_album(albums[0])
+            else:
+                tracks = []
+                for item in singles:
+                    if not item.parentItem in albums:
+                        tracks.append(item.track())
+                [tracks.extend(item.tracks()) for item in albums
+                 if item.hasTracks]
             for item in albums:
                 if '#extrainfo' in item.itemData:
                     desc, url = item.itemData['#extrainfo']
@@ -831,6 +1074,7 @@ class ReleaseWidget(QTreeView):
     def setMapping(self, mapping):
         self.model().mapping = mapping
         self.mapping = mapping
+        self.resetFuzzyCache()
 
 
 if __name__ == "__main__":
