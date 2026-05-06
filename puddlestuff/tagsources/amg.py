@@ -431,6 +431,110 @@ def parse_similar(swipe):
     return {}
 
 
+def _absolute_allmusic_url(href):
+    if not href:
+        return None
+    href = iri_to_uri(href)
+    if href.startswith('//'):
+        href = 'https:' + href
+    if href.startswith('/'):
+        href = ALLMUSIC_BASE + href
+    return href
+
+
+def _extract_similar_albums(soup):
+    """Extract Similar Albums from an AllMusic album page soup.
+
+    Returns a list of strings, each encoded as:
+        "Artist;artist_url;Album;album_url"
+    """
+    if soup is None:
+        return []
+
+    results = []
+    seen = set()
+
+    def _add_entry(artist_text, artist_url, album_text, album_url):
+        artist_text = (artist_text or '').strip()
+        album_text = (album_text or '').strip()
+        artist_url = (artist_url or '').strip()
+        album_url = (album_url or '').strip()
+        if not artist_text or not album_text or not album_url:
+            return
+        entry = f"{artist_text};{artist_url};{album_text};{album_url}"
+        if entry in seen:
+            return
+        seen.add(entry)
+        results.append(entry)
+
+    # Prefer listview table (more structured).
+    table = soup.find('table', {'id': 'similarListview'})
+    if table is not None:
+        tbody = table.find('tbody') or table
+        for row in tbody.find_all('tr'):
+            meta = row.find('td', {'class': 'meta'})
+            if meta is None:
+                continue
+            artist_span = meta.find('span', {'class': 'similarArtist'})
+            title_span = meta.find('span', {'class': 'similarTitle'})
+            artist_anchor = artist_span.find('a') if artist_span is not None else None
+            album_anchor = title_span.find('a') if title_span is not None else None
+
+            artist_text = element_text(artist_span)
+            artist_url = _absolute_allmusic_url(
+                artist_anchor.element.attrib.get('href') if artist_anchor is not None else None)
+
+            album_text = element_text(title_span)
+            album_url = _absolute_allmusic_url(
+                album_anchor.element.attrib.get('href') if album_anchor is not None else None)
+            _add_entry(artist_text, artist_url, album_text, album_url)
+
+        if results:
+            return results
+
+    # Fallback: grid view blocks.
+    similar_blocks = soup.find_all('div', {'class': 'similarAlbum'})
+    for block in similar_blocks:
+        meta = block.find('div', {'class': 'meta'})
+        if meta is None:
+            continue
+        artist_span = meta.find('span', {'class': 'artist'})
+        title_span = meta.find('span', {'class': 'title'})
+        artist_anchor = artist_span.find('a') if artist_span is not None else None
+        album_anchor = title_span.find('a') if title_span is not None else None
+
+        artist_text = element_text(artist_span)
+        artist_url = _absolute_allmusic_url(
+            artist_anchor.element.attrib.get('href') if artist_anchor is not None else None)
+
+        album_text = element_text(title_span)
+        album_url = _absolute_allmusic_url(
+            album_anchor.element.attrib.get('href') if album_anchor is not None else None)
+
+        _add_entry(artist_text, artist_url, album_text, album_url)
+
+    return results
+
+
+def fetch_similar_albums_soup(album_url):
+    # AllMusic album-page JS fetches Similar Albums via /similarAjax.
+    return _fetch_tab_soup(album_url, 'similarAjax', 'similar albums')
+
+
+def _ensure_similar_albums(info, album_soup, *album_urls):
+    similar = _extract_similar_albums(album_soup)
+    if not similar:
+        for candidate_url in album_urls:
+            if not candidate_url:
+                continue
+            ajax_soup = fetch_similar_albums_soup(candidate_url)
+            similar = _extract_similar_albums(ajax_soup)
+            if similar:
+                break
+    if similar:
+        info['similar_albums'] = similar
+
+
 def parse_albumpage(page, artist=None, album=None, album_url=None):
     album_soup = parse_html.SoupWrapper(parse_html.parse(page))
 
@@ -540,6 +644,7 @@ def parse_albumpage(page, artist=None, album=None, album_url=None):
     fallback_url = canonical or album_url
     _ensure_moods_themes(info, album_soup, fallback_url)
     _ensure_credits(info, album_soup, fallback_url)
+    _ensure_similar_albums(info, album_soup, fallback_url)
 
     # swipe = main.find('div', {'id':"similar-albums", 'class':"grid-gallery"})
 
@@ -1318,6 +1423,7 @@ def parse_release_albumpage(page, album_soup, album_url=None):
     _ensure_basic_info(info, info.get('#main-album-url'))
     _ensure_moods_themes(info, album_soup, *fallback_urls)
     _ensure_credits(info, album_soup, *fallback_urls)
+    _ensure_similar_albums(info, album_soup, *fallback_urls)
 
     review_section = _locate_review_section(album_soup)
     if review_section is None:
@@ -1401,6 +1507,7 @@ def parse_modern_albumpage(page, album_soup, artist=None, album=None, album_url=
 
     _ensure_moods_themes(info, album_soup, info.get('#canonical-url') or album_url)
     _ensure_credits(info, album_soup, info.get('#canonical-url') or album_url)
+    _ensure_similar_albums(info, album_soup, info.get('#canonical-url') or album_url)
 
     review_section = _locate_review_section(album_soup)
     if review_section is None:
